@@ -21,7 +21,7 @@ use swiftdl_engine::{CancellationToken, Client, Outcome, Progress};
 const SITES: &[&str] = &[
     "youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "x.com", "twitter.com", "reddit.com",
     "instagram.com", "tiktok.com", "facebook.com", "twitch.tv", "dailymotion.com", "soundcloud.com", "bilibili.com",
-    "xvideos.com", "xnxx.com", "hqporner.com",
+    "xvideos.com", "xnxx.com",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +176,7 @@ fn ffmpeg_dir() -> Option<PathBuf> {
 
 static TOOLS: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+#[derive(Clone)]
 struct Tools {
     ytdlp: PathBuf,
     ffmpeg: Option<PathBuf>,
@@ -323,7 +324,7 @@ async fn probe_inner(client: &Client, url: &str, headers: Vec<(String, String)>,
     let url = download_url(url)?;
     let hls = stream_kind == Some(StreamKind::Hls) || is_hls_url(&url);
     let cookies = scoped_cookies(&url, &headers, &cookies);
-    if hls { crate::hls::validate_vod(&url, &headers, &cookies).await?; }
+    let playable = if hls { Some(crate::hls::vod_playlists(&url, &headers, &cookies).await?) } else { None };
     let auth = Auth::new(&url, &headers, &cookies)?;
     let note: Note = Arc::default();
     let tools = match tools { Some(tools) => tools, None => ensure_tools(client, &note, false).await? };
@@ -337,7 +338,12 @@ async fn probe_inner(client: &Client, url: &str, headers: Vec<(String, String)>,
     if !out.status.success() {
         bail!("{}", last_error(&String::from_utf8_lossy(&out.stderr)).unwrap_or_else(|| "yt-dlp couldn't read this page".into()));
     }
-    let info: Value = serde_json::from_slice(&out.stdout).context("yt-dlp gave an unexpected answer")?;
+    let mut info: Value = serde_json::from_slice(&out.stdout).context("yt-dlp gave an unexpected answer")?;
+    if let Some(playable) = playable {
+        if let Some(formats) = info["formats"].as_array_mut() {
+            formats.retain(|f| f["url"].as_str().is_some_and(|url| playable.contains(url)));
+        }
+    }
     if hls && (info["is_live"].as_bool() == Some(true) || matches!(info["live_status"].as_str(), Some("is_live" | "is_upcoming" | "post_live"))) {
         bail!("Live HLS recording is not supported yet. Choose a finished video (VOD).");
     }
@@ -500,13 +506,6 @@ async fn run_inner(client: &Client, job: Job, progress: Arc<Progress>, note: Not
     let url = download_url(&job.url)?;
     let hls = job.stream_kind == Some(StreamKind::Hls) || is_hls_url(&url);
     let cookies = scoped_cookies(&url, &job.headers, &job.cookies);
-    if hls {
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Ok(Outcome::Paused),
-            result = crate::hls::validate_vod(&url, &job.headers, &cookies) => result?,
-        }
-    }
     let merges = job.format.contains('+');
     let tools = match tools { Some(tools) => tools, None => tokio::select! {
         biased;
@@ -515,6 +514,16 @@ async fn run_inner(client: &Client, job: Job, progress: Arc<Progress>, note: Not
     }};
     if (merges || hls) && tools.ffmpeg.is_none() {
         bail!("HLS downloads and joining video/audio need ffmpeg. Install it (brew install ffmpeg, or sudo apt install ffmpeg) and try again.");
+    }
+    if hls {
+        let info = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(Outcome::Paused),
+            result = probe_inner(client, &url, job.headers.clone(), cookies.clone(), job.stream_kind, Some(tools.clone())) => result?,
+        };
+        if !info.qualities.iter().any(|q| q.format == job.format) {
+            bail!("The selected HLS rendition is no longer a finished, non-DRM video. Refresh the page and choose an available quality.");
+        }
     }
     if cancel.is_cancelled() {
         return Ok(Outcome::Paused);
@@ -785,12 +794,22 @@ mod tests {
         let mut sniff_headers = headers.clone();
         sniff_headers.push(("Cookie".into(), "session=fixture-only".into()));
         assert!(crate::hls::detect(&format!("{base}/detect?sig=exact%2Fvalue&rn=keep"), &sniff_headers).await.unwrap());
-        for variant in ["ts", "fmp4", "aes", "separate"] {
+        for variant in ["ts", "fmp4", "aes", "separate", "mixed"] {
             let url = format!("{base}/{variant}/master.m3u8?sig=exact%2Fvalue&rn=keep");
             let info = probe_inner(&client, &url, headers.clone(), cookies.clone(), Some(StreamKind::Hls), tools()).await.unwrap();
+            if variant == "mixed" {
+                assert_eq!(info.qualities.len(), 1, "only the finished, clear rendition should be offered");
+                assert!(info.qualities[0].label.starts_with("90p"));
+            }
             let quality = info.qualities.iter().find(|q| !q.audio_only).unwrap();
             let dest = dir.path().join(format!("{variant} 100%.mkv"));
             let job = Job { url, format: quality.format.clone(), dest: dest.clone(), headers: headers.clone(), cookies: cookies.clone(), stream_kind: Some(StreamKind::Hls) };
+            if variant == "mixed" {
+                let mut unavailable = job.clone();
+                unavailable.format = "unavailable-rendition".into();
+                let error = run_inner(&client, unavailable, Arc::default(), Note::default(), CancellationToken::new(), tools()).await.unwrap_err().to_string();
+                assert!(error.contains("selected HLS rendition"));
+            }
             if variant == "ts" {
                 let progress = Arc::new(Progress::default());
                 let cancel = CancellationToken::new();
@@ -798,14 +817,18 @@ mod tests {
                     let (client, job, progress, cancel) = (client.clone(), job.clone(), progress.clone(), cancel.clone());
                     tokio::spawn(async move { run_inner(&client, job, progress, Note::default(), cancel, tools()).await })
                 };
-                tokio::time::timeout(Duration::from_secs(15), async {
-                    while progress.downloaded.load(Ordering::Relaxed) == 0 {
-                        assert!(!task.is_finished(), "download finished before pause could be tested");
+                // Startup now includes a fresh rendition probe as well as the
+                // downloader's extraction; standalone Python startup can be slow.
+                let started = tokio::time::timeout(Duration::from_secs(60), async {
+                    while progress.downloaded.load(Ordering::Relaxed) == 0 && !task.is_finished() {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
-                }).await.expect("no fragment progress");
+                }).await;
                 cancel.cancel();
-                assert!(matches!(task.await.unwrap().unwrap(), Outcome::Paused));
+                let outcome = task.await.unwrap();
+                assert!(started.is_ok(), "no fragment progress: {outcome:?}");
+                assert!(progress.downloaded.load(Ordering::Relaxed) > 0, "download ended before pause could be tested: {outcome:?}");
+                assert!(matches!(outcome.unwrap(), Outcome::Paused));
                 assert!(std::fs::read_dir(hls_work_dir(&dest)).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".part")));
             }
             assert!(matches!(run_inner(&client, job, Arc::default(), Note::default(), CancellationToken::new(), tools()).await.unwrap(), Outcome::Completed));
@@ -894,7 +917,9 @@ mod tests {
 
     #[test]
     fn recognises_additional_ytdlp_sites_without_matching_lookalikes() {
-        for site in ["xvideos.com", "xnxx.com", "hqporner.com"] {
+        assert!(!is_media_url("https://hqporner.com/hdporn/128499-video.html"));
+        assert!(!is_media_url("https://www.hqporner.com/hdporn/128499-video.html"));
+        for site in ["xvideos.com", "xnxx.com"] {
             for host in [site.to_string(), format!("www.{site}"), format!("m.{site}"), site.to_uppercase()] {
                 assert!(is_media_url(&format!("https://{host}/video/123")), "{host}");
             }

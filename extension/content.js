@@ -30,7 +30,7 @@
   const MIN_W = 200, MIN_H = 112;
   // Video sites SwiftDL downloads through yt-dlp: the page itself is sent,
   // and the quality is chosen in SwiftDL.
-  const VIDEO_SITE = /(^|\.)(youtube\.com|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|bilibili\.com|xvideos\.com|xnxx\.com|hqporner\.com)$/i;
+  const VIDEO_SITE = /(^|\.)(youtube\.com|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|bilibili\.com|xvideos\.com|xnxx\.com)$/i;
   const onVideoSite = () => VIDEO_SITE.test(location.hostname);
   const LOGO = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="#2a2c32"/><path d="M8 7l4 4 4-4" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/><path d="M8 11.3l4 4 4-4" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><rect x="7.6" y="17" width="8.8" height="1.9" rx=".95" fill="#fff"/></svg>`;
 

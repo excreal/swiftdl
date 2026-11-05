@@ -44,11 +44,15 @@ async function mediaCookies(urls) {
 }
 
 async function sendToApp({ url, referrer, filename, streamKind, tabId }) {
+  const { enabled } = await getSettings();
+  const tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
+  if (!enabled || await siteDisabled(tab?.url || referrer || url) || await siteDisabled(referrer || url)) {
+    throw new Error("SwiftDL is disabled for this page");
+  }
   // HQPorner's video lives in a cross-origin player whose document title is
   // often just "video". Use the owning tab, not the iframe, for the filename.
   // Keep the actual file URL and player referrer: the CDN still needs them.
   if (tabId != null && MEDIA_EXT.test(url) && /(^|\.)bigcdn\.cc$/i.test(hostOf(url))) {
-    const tab = await chrome.tabs.get(tabId).catch(() => null);
     const name = hqpornerFilename(tab, url);
     if (name) filename = name;
   }
@@ -104,7 +108,8 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // Pause first so the browser doesn't keep downloading while we ask the app.
   await chrome.downloads.pause(item.id).catch(() => {});
   try {
-    await sendToApp({ url, referrer: item.referrer, filename: item.filename, tabId: item.tabId });
+    const context = await browserDownloadContext(item);
+    await sendToApp({ url, referrer: item.referrer || context?.referrer, filename: item.filename, tabId: context?.id, streamKind: context?.streamKind });
     await chrome.downloads.cancel(item.id).catch(() => {});
     await chrome.downloads.erase({ id: item.id }).catch(() => {});
     await log(`#${item.id} handed to SwiftDL`);
@@ -115,6 +120,27 @@ chrome.downloads.onCreated.addListener(async (item) => {
     flashBadge("!", "#dc4b4b");
   }
 });
+
+// Chromium DownloadItem has no tabId. Match observed media or the actual
+// referring document, never the currently active (possibly unrelated) tab.
+async function browserDownloadContext(item) {
+  const tabs = await chrome.tabs.query({}).catch(() => []);
+  const matches = [];
+  for (const tab of tabs) {
+    const data = await chrome.storage.session.get([key(tab.id), `media-frames:${tab.id}`]);
+    const media = data[key(tab.id)] || [];
+    const frames = data[`media-frames:${tab.id}`] || {};
+    const detected = media.find((m) => m.url === item.url || m.url === item.finalUrl);
+    if (detected
+        || (item.referrer && (tab.url === item.referrer || Object.values(frames).includes(item.referrer)))) {
+      matches.push({ ...tab, referrer: detected?.pageUrl || frames[detected?.frameId] || tab.url, streamKind: detected?.kind === "hls" ? "hls" : undefined });
+    }
+  }
+  for (const tab of matches) {
+    if (await siteDisabled(tab.url)) throw new Error("SwiftDL is disabled for this page");
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
 
 // ---------- media detection ----------
 // Per tab, the video/audio files and streams the page has loaded. Kept in
@@ -177,8 +203,8 @@ chrome.webRequest.onResponseStarted.addListener(
       });
     }
     if (!kind) return;
-    // Never strip or rewrite signed HLS query parameters.
-    const url = kind === "hls" ? d.url : d.url.replace(/([?&])(range|rn|rbuf)=[^&]*/gi, "$1").replace(/[?&]$/, "");
+    // Any media URL can be signed, including ordinary MP4 files.
+    const url = d.url;
     await updateTab(d.tabId, async () => {
       const { [key(d.tabId)]: list = [] } = await chrome.storage.session.get(key(d.tabId));
       if (list.some((m) => m.url === url)) return;
@@ -224,7 +250,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = info.linkUrl || info.srcUrl;
   if (!url || !/^https?:/i.test(url)) return flashBadge("!", "#dc4b4b", tab?.id);
   try {
-    await sendToApp({ url, referrer: info.pageUrl || tab?.url, tabId: tab?.id });
+    await sendToApp({ url, referrer: info.frameUrl || info.pageUrl || tab?.url, tabId: tab?.id });
     flashBadge("✓", "#2f9e6a", tab?.id);
   } catch (err) {
     await log(`context menu: could not reach the app: ${err?.message || err}`);
@@ -251,7 +277,11 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         return { ok: true };
       case "ping": return ping();
       case "bypass": bypassUntil = Date.now() + 4000; return { ok: true };
-      case "media": return { items: await mediaFor(tabId), disabled: await siteDisabled(pageUrl) };
+      case "media": {
+        const { enabled } = await getSettings();
+        const tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
+        return { items: await mediaFor(tabId), disabled: !enabled || await siteDisabled(tab?.url || pageUrl) || await siteDisabled(pageUrl) };
+      }
       case "grab":
         try {
           const detected = (await mediaFor(tabId)).find((m) => m.url === msg.url);

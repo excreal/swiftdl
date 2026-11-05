@@ -6,6 +6,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-05
+
+### Fixed
+- Reserve output paths across queued, running and paused downloads to prevent collisions with partial files and HLS work directories.
+- Keep usable HLS renditions available when sibling playlists are unavailable, live or DRM-protected; recheck the selected rendition before downloading.
+- Respect extension disable settings across media handoffs, preserve iframe referrers and signed media URLs, and recover browser-download context without relying on a nonexistent Chromium download tab ID.
+- Remove unsupported HQPorner page extraction from yt-dlp routing while retaining direct media detection and parent-page filenames.
+
 ### Added
 - Generic HLS VOD downloads through yt-dlp: extension detection and handoff, pasted playlist links, quality selection, scoped cookies and headers, fragment pause/resume, and Matroska output.
 - Local HLS fixture tests for authenticated MPEG-TS, fragmented MP4 and AES-128 streams. Live HLS, DRM and DASH are explicitly excluded.
@@ -153,7 +161,8 @@ uses [Semantic Versioning](https://semver.org/).
 - GitHub Actions for CI and tagged releases (Windows, macOS, Linux and the
   extension zip).
 
-[Unreleased]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.2...v0.3.3
 [0.3.1]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/harshsinghsv/swiftdl/compare/v0.2.3...v0.3.0

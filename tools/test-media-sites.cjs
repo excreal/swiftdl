@@ -21,11 +21,15 @@ async function main() {
     }
   }
   assert.equal(await invoke("is_media_url", { url: "not a URL" }), false);
+  assert.equal(await invoke("is_media_url", { url: "https://hqporner.com/hdporn/128499-video.html" }), false);
   for (const file of ["extension/content.js", "extension/popup.js"]) {
     const context = {};
     const declaration = read(file).match(/const VIDEO_SITE = .*;/)[0];
     vm.runInNewContext(`${declaration}\nglobalThis.pattern = VIDEO_SITE;`, context);
-    for (const site of ["xvideos.com", "xnxx.com", "hqporner.com", "dailymotion.com"]) {
+    for (const host of ["hqporner.com", "www.hqporner.com", "m.hqporner.com"]) {
+      assert(!context.pattern.test(host), `${file}: unsupported HQPorner page extraction must not be advertised`);
+    }
+    for (const site of ["xvideos.com", "xnxx.com", "dailymotion.com"]) {
       for (const host of [site, `www.${site}`, `geo.${site}`, site.toUpperCase()]) {
         assert(context.pattern.test(host), `${file}: ${host}`);
       }

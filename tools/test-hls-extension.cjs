@@ -8,19 +8,27 @@ async function main() {
   const state = {};
   const messages = [];
   const cookieLookups = [];
-  let response, message, badge, contextMenu;
+  let response, message, badge, contextMenu, downloadCreated;
+  let extraTabs = [];
+  const downloadEvents = [];
   let tab = { id: 7, url: "https://page.example.test/watch", title: "Fixture" };
   const event = () => ({ addListener() {} });
   const storage = {
-    get: async (key) => typeof key === "object" ? { ...key, ...state } : { [key]: state[key] },
+    get: async (key) => key === null ? { ...state } : Array.isArray(key) ? Object.fromEntries(key.map((k) => [k, state[k]])) : typeof key === "object" ? { ...key, ...state } : { [key]: state[key] },
     set: async (value) => Object.assign(state, structuredClone(value)),
     remove: async (keys) => { for (const key of [].concat(keys)) delete state[key]; },
   };
   const chrome = {
     storage: { sync: storage, local: storage, session: storage },
-    downloads: { onCreated: event() },
+    downloads: {
+      onCreated: { addListener: (fn) => { downloadCreated = fn; } },
+      pause: async () => downloadEvents.push("pause"),
+      cancel: async () => downloadEvents.push("cancel"),
+      erase: async () => downloadEvents.push("erase"),
+      resume: async () => downloadEvents.push("resume"),
+    },
     webRequest: { onResponseStarted: { addListener: (fn) => { response = fn; } } },
-    tabs: { onUpdated: event(), onRemoved: event(), get: async () => tab },
+    tabs: { onUpdated: event(), onRemoved: event(), get: async (id) => [tab, ...extraTabs].find((t) => t.id === id), query: async () => [tab, ...extraTabs] },
     action: { setBadgeText: (value) => { badge = value; }, setBadgeBackgroundColor() {} },
     contextMenus: { onClicked: { addListener: (fn) => { contextMenu = fn; } }, removeAll() {}, create() {} },
     cookies: { getAll: async ({ url }) => {
@@ -69,8 +77,45 @@ async function main() {
   assert.equal(messages.at(-1).filename, "You Understand Now.mp4", "iframe downloads use the parent title");
   assert.equal(messages.at(-1).url, file, "keep signed CDN URLs intact");
   assert.equal(messages.at(-1).referrer, player, "keep the CDN's player referrer");
-  await contextMenu({ srcUrl: file, pageUrl: player }, tab);
-  assert.equal(messages.at(-1).filename, "You Understand Now.mp4", "right-click downloads also use the parent title");
+   await contextMenu({ srcUrl: file, pageUrl: page, frameUrl: player }, tab);
+   assert.equal(messages.at(-1).filename, "You Understand Now.mp4", "right-click downloads also use the parent title");
+   assert.equal(messages.at(-1).referrer, player, "right-click must prefer frameUrl to pageUrl");
+   await new Promise((resolve) => message({ type: "frame-context" }, { tab, frameId: 4, url: player }, resolve));
+   const automatic = { id: 1, url: file, referrer: player, filename: "video.mp4", state: "in_progress" };
+   await downloadCreated(automatic);
+   assert.equal(messages.at(-1).filename, "You Understand Now.mp4", "Chromium DownloadItem without tabId must recover its owning tab");
+   assert.equal(downloadEvents.at(-1), "erase");
+   extraTabs = [{ id: 8, url: page, title: "Other tab" }];
+   state["media-frames:8"] = { 4: player };
+   await downloadCreated(automatic);
+   assert.equal(messages.at(-1).filename, "video.mp4", "ambiguous tabs must not supply an arbitrary title");
+   state.disabledSites = ["hqporner.com"];
+   let beforeAmbiguous = messages.length;
+   await downloadCreated(automatic);
+   assert.equal(messages.length, beforeAmbiguous, "ambiguous tab matching must not bypass a disabled parent site");
+   assert.equal(downloadEvents.at(-1), "resume");
+   state.disabledSites = [];
+   extraTabs = [];
+   state.enabled = false;
+   let count = messages.length;
+   assert.equal((await grab(file, "video.mp4")).ok, false);
+   await contextMenu({ srcUrl: file, pageUrl: page, frameUrl: player }, tab);
+   await downloadCreated(automatic);
+   assert.equal(messages.length, count, "global disable must block every download entry point");
+   state.enabled = true;
+   state.disabledSites = ["hqporner.com"];
+   count = messages.length;
+   assert.equal((await grab(file, "video.mp4")).ok, false);
+   await downloadCreated(automatic);
+   assert.equal(messages.length, count, "disabled parent sites must also block iframe downloads");
+   assert.equal(downloadEvents.at(-1), "resume", "a rejected automatic handoff must resume the browser download");
+   state.disabledSites = [];
+   await downloadCreated({ id: 2, url: signed, filename: "playlist", state: "in_progress", referrer: "" });
+   assert.equal(messages.at(-1).streamKind, "hls", "automatic interception must keep detected extensionless HLS classification");
+   assert.equal(messages.at(-1).cookies, "", "automatic HLS downloads must also use scoped cookies");
+   const signedMp4 = "https://cdn.example.test/movie.mp4?sig=keep%2Fexact&rn=123&expires=456";
+   await detected(signedMp4, "video/mp4");
+   assert(state["media:7"].some((m) => m.url === signedMp4), "MP4 query parameters must also remain intact");
   await grab("https://ads.example.test/ad.mp4", "ad.mp4");
   assert.equal(messages.at(-1).filename, "ad.mp4", "do not rename unrelated files");
   tab = { id: 7, url: "https://nothqporner.com/hdporn/128499-video.html", title: "Unrelated" };

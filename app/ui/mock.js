@@ -170,7 +170,7 @@
       try {
         const parsed = new URL(url.trim()), host = parsed.hostname;
         if (/^https?:$/.test(parsed.protocol) && /\.m3u8$/i.test(parsed.pathname)) return true;
-        return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|soundcloud\.com|bilibili\.com|xvideos\.com|xnxx\.com|hqporner\.com)$/i.test(host);
+        return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|soundcloud\.com|bilibili\.com|xvideos\.com|xnxx\.com)$/i.test(host);
       } catch { return false; }
     },
     open_new_download: () => {},

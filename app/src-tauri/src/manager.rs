@@ -242,9 +242,14 @@ impl DownloadManager {
 
     pub fn add(self: &Arc<Self>, req: AddRequest) -> u64 {
         let filename = req.filename.trim().to_string();
-        let path = swiftdl_engine::resolve_dest(&req.dir, &filename);
         let id = {
             let mut g = self.inner.lock().unwrap();
+            // Allocate under the same lock that inserts the item. Pending and
+            // paused jobs own their paths even before a final file exists.
+            let path = available_dest(&req.dir, &filename, |path| {
+                g.items.iter().any(|item| item.path == path)
+                    || g.running.values().any(|job| job.path == path)
+            });
             let id = g.next_id;
             g.next_id += 1;
             g.items.push(Item {
@@ -668,6 +673,42 @@ fn remove_temp_files(path: &Path) {
     let mut state = path.as_os_str().to_owned();
     state.push(".swiftdl");
     let _ = std::fs::remove_file(PathBuf::from(state));
+}
+
+fn available_dest(dir: &Path, filename: &str, reserved: impl Fn(&Path) -> bool) -> PathBuf {
+    let original = dir.join(filename);
+    let stem = original.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = original.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    for index in 0.. {
+        let path = if index == 0 { original.clone() } else { original.with_file_name(format!("{stem} ({index}){ext}")) };
+        let mut hls = path.as_os_str().to_owned();
+        hls.push(".swiftdl-hls");
+        let mut state = path.as_os_str().to_owned();
+        state.push(".swiftdl");
+        if !reserved(&path) && !path.exists() && !swiftdl_engine::part_path(&path).exists()
+            && !Path::new(&hls).exists() && !Path::new(&state).exists() {
+            return path;
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+
+    #[test]
+    fn reserves_queued_running_and_partial_destinations() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = available_dest(dir.path(), "video.mkv", |_| false);
+        let second = available_dest(dir.path(), "video.mkv", |p| p == first);
+        assert_eq!(second.file_name().unwrap(), "video (1).mkv");
+        std::fs::write(swiftdl_engine::part_path(&second), b"partial").unwrap();
+        let hls = dir.path().join("video (2).mkv.swiftdl-hls");
+        std::fs::create_dir(hls).unwrap();
+        let third = available_dest(dir.path(), "video.mkv", |p| p == first);
+        assert_eq!(third.file_name().unwrap(), "video (3).mkv");
+    }
 }
 
 fn now_ms() -> u64 {

@@ -93,32 +93,53 @@ fn playlist_children(text: &str) -> Result<Vec<String>> {
     Ok(children)
 }
 
+#[cfg(test)]
 pub async fn validate_vod(url: &str, headers: &[(String, String)], cookies: &[Cookie]) -> Result<()> {
+    vod_playlists(url, headers, cookies).await.map(|_| ())
+}
+
+/// Inspect renditions independently: a dead or protected sibling must not
+/// prevent downloading a finished clear rendition. Return only usable URLs.
+pub async fn vod_playlists(url: &str, headers: &[(String, String)], cookies: &[Cookie]) -> Result<HashSet<String>> {
     tokio::time::timeout(Duration::from_secs(60), async {
         let client = client()?;
         let mut pending = vec![url.to_string()];
         let mut seen = HashSet::new();
-        let mut media_playlists = 0;
+        let mut playable = HashSet::new();
+        let mut last_error = None;
         while let Some(url) = pending.pop() {
             if !seen.insert(url.clone()) { continue; }
             if seen.len() > 32 { bail!("This HLS master playlist has too many variants to inspect safely"); }
-            let mut resp = response(&client, &url, headers, cookies, false).await?;
-            let base = resp.url().clone();
-            let mut data = Vec::new();
-            while let Some(chunk) = resp.chunk().await.map_err(|_| anyhow::anyhow!("Could not read the HLS playlist"))? {
-                if data.len() + chunk.len() > MAX_PLAYLIST { bail!("HLS playlist exceeds the inspection size limit"); }
-                data.extend_from_slice(&chunk);
-            }
-            if !signature(&data) { bail!("The server did not return an HLS playlist. The link may have expired or require a login."); }
-            let text = std::str::from_utf8(&data).map_err(|_| anyhow::anyhow!("HLS playlist is not valid UTF-8"))?;
-            let children = playlist_children(text)?;
-            if children.is_empty() { media_playlists += 1; }
-            for child in children {
-                pending.push(base.join(&child).map_err(|_| anyhow::anyhow!("Invalid URL in HLS master playlist"))?.to_string());
+            let inspected: Result<_> = async {
+                let mut resp = response(&client, &url, headers, cookies, false).await?;
+                let base = resp.url().clone();
+                let mut data = Vec::new();
+                while let Some(chunk) = resp.chunk().await.map_err(|_| anyhow::anyhow!("Could not read the HLS playlist"))? {
+                    if data.len() + chunk.len() > MAX_PLAYLIST { bail!("HLS playlist exceeds the inspection size limit"); }
+                    data.extend_from_slice(&chunk);
+                }
+                if !signature(&data) { bail!("The server did not return an HLS playlist. The link may have expired or require a login."); }
+                let text = std::str::from_utf8(&data).map_err(|_| anyhow::anyhow!("HLS playlist is not valid UTF-8"))?;
+                Ok((base, playlist_children(text)?))
+            }.await;
+            match inspected {
+                Ok((base, children)) if children.is_empty() => {
+                    playable.insert(url);
+                    playable.insert(base.to_string());
+                }
+                Ok((base, children)) => {
+                    for child in children {
+                        match base.join(&child) {
+                            Ok(url) => pending.push(url.to_string()),
+                            Err(_) => last_error = Some(anyhow::anyhow!("Invalid URL in HLS master playlist")),
+                        }
+                    }
+                }
+                Err(error) => last_error = Some(error),
             }
         }
-        if media_playlists == 0 { bail!("HLS master playlist contains no finished media playlist"); }
-        Ok(())
+        if playable.is_empty() { return Err(last_error.unwrap_or_else(|| anyhow::anyhow!("HLS master playlist contains no finished media playlist"))); }
+        Ok(playable)
     }).await.map_err(|_| anyhow::anyhow!("Timed out checking HLS playlists"))?
 }
 

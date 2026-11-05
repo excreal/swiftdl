@@ -57,6 +57,16 @@ def main():
             '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=160x90,CODECS="avc1.42c00a,mp4a.40.2",AUDIO="audio"\nvideo.m3u8\n'
         )
 
+        mixed = root / "mixed"
+        mixed.mkdir()
+        (mixed / "master.m3u8").write_text(
+            '#EXTM3U\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=400000,RESOLUTION=160x90,CODECS="avc1.42c00a,mp4a.40.2"\n../ts/media.m3u8\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=320x180,CODECS="avc1.42c00a,mp4a.40.2"\n../drm.m3u8\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=480x270,CODECS="avc1.42c00a,mp4a.40.2"\n../live.m3u8\n'
+            '#EXT-X-STREAM-INF:BANDWIDTH=1600000,RESOLUTION=640x360,CODECS="avc1.42c00a,mp4a.40.2"\n../expired.m3u8\n'
+        )
+
         class Handler(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass  # Do not log signed URLs or credentials, even fixture ones.
