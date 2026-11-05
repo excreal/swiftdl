@@ -139,6 +139,53 @@ mod tests {
         let error = open_with_launchers(path, None, &[("sh", &["-c", "echo 'No default video player' >&2; exit 1"])]).unwrap_err();
         assert!(error.contains("No default video player"));
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_reports_immediate_appimage_runtime_errors() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo 'AppImages require FUSE to run' >&2; exit 1"]);
+        assert!(launch_checked(&mut cmd).unwrap_err().contains("AppImages require FUSE"));
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "exit 2"]);
+        assert!(launch_checked(&mut cmd).unwrap_err().contains("exit status: 2"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_does_not_wait_for_inherited_stderr_to_close() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.args(["-c", "sleep 5 >&2 & exit 0"]);
+            let _ = tx.send(launch_checked(&mut cmd));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(3)).expect("waited for descendant stderr EOF").unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_detaches_without_retrying_when_player_later_exits_nonzero() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = open_with_launchers(std::path::Path::new("/Downloads/video.mp4"), None, &[
+                ("sh", &["-c", "sleep 5; exit 1"]),
+                ("sh", &["-c", "echo 'unwanted fallback' >&2; exit 1"]),
+            ]);
+            let _ = tx.send(result);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(3)).expect("waited for player exit").unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launch_drains_noisy_stderr_without_unbounded_diagnostics() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "head -c 100000 /dev/zero >&2; echo 'startup failure' >&2; exit 1"]);
+        let error = launch_checked(&mut cmd).unwrap_err();
+        assert!(error.contains("startup failure"));
+        assert!(error.len() <= 8192);
+    }
 }
 
 #[tauri::command]
@@ -178,16 +225,13 @@ fn open_linux_file(path: &std::path::Path) -> Result<(), String> {
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("AppImage")) {
         prepare_appimage(path).map_err(|e| format!("Cannot launch {}: {e}", path.display()))?;
         let mut cmd = std::process::Command::new(path);
-        cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         if let Some(dir) = &app_dir {
             clean_appimage_environment(&mut cmd, dir);
         }
         // These describe SwiftDL's own bundle, not the app being launched.
         cmd.env_remove("APPIMAGE").env_remove("APPDIR").env_remove("ARGV0");
-        let mut child = cmd.spawn().map_err(|e| format!("Cannot launch {}: {e}", path.display()))?;
-        std::thread::spawn(move || { let _ = child.wait(); });
-        return Ok(());
+        return launch_checked(&mut cmd)
+            .map_err(|e| format!("Cannot launch {}: {e}", path.display()));
     }
     open_with_launchers(path, app_dir.as_deref(), &[("xdg-open", &[]), ("gio", &["open"])])
 }
@@ -197,17 +241,101 @@ fn open_with_launchers(path: &std::path::Path, app_dir: Option<&std::path::Path>
     let mut errors = Vec::new();
     for (program, args) in launchers {
         let mut cmd = std::process::Command::new(program);
-        cmd.args(*args).arg(path).stdin(std::process::Stdio::null());
+        cmd.args(*args).arg(path);
         if let Some(dir) = app_dir {
             clean_appimage_environment(&mut cmd, dir);
         }
-        match cmd.output() {
-            Ok(out) if out.status.success() => return Ok(()),
-            Ok(out) => errors.push(format!("{program}: {}", String::from_utf8_lossy(&out.stderr).trim())),
+        match launch_checked(&mut cmd) {
+            Ok(()) => return Ok(()),
             Err(e) => errors.push(format!("{program}: {e}")),
         }
     }
     Err(format!("Could not open {} with its default application. {}", path.display(), errors.join("; ")))
+}
+
+/// Report early startup failures, but never wait for a desktop app to close.
+/// Keep draining stderr after returning so inherited pipes cannot block it.
+#[cfg(target_os = "linux")]
+fn launch_checked(cmd: &mut std::process::Command) -> Result<(), String> {
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let (mut errors, writer) = UnixStream::pair().map_err(|e| e.to_string())?;
+    errors.set_nonblocking(true).map_err(|e| e.to_string())?;
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(OwnedFd::from(writer)));
+    let mut child = Some(cmd.spawn().map_err(|e| e.to_string())?);
+    // Command retains its configured descriptor; close that extra writer too.
+    cmd.stderr(Stdio::null());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_millis(750);
+        let mut reply = Some(tx);
+        let mut diagnostic = std::collections::VecDeque::<u8>::new();
+        let mut eof = false;
+        loop {
+            // Bound both retained diagnostics and work per tick, even for a
+            // noisy process. No read or EOF wait may delay the startup reply.
+            for _ in 0..64 {
+                let mut buf = [0; 1024];
+                match errors.read(&mut buf) {
+                    Ok(0) => { eof = true; break; }
+                    Ok(n) if reply.is_some() => {
+                        diagnostic.extend(&buf[..n]);
+                        while diagnostic.len() > 8192 { diagnostic.pop_front(); }
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => { eof = true; break; }
+                }
+            }
+            if let Some(process) = child.as_mut() {
+                match process.try_wait() {
+                    Ok(Some(status)) => {
+                        child = None;
+                        if let Some(tx) = reply.take() {
+                            // Read once more to capture errors written
+                            // between the drain above and process termination.
+                            if !status.success() {
+                                for _ in 0..256 {
+                                    let mut tail = [0; 1024];
+                                    match errors.read(&mut tail) {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            diagnostic.extend(&tail[..n]);
+                                            while diagnostic.len() > 8192 { diagnostic.pop_front(); }
+                                        }
+                                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                                        Err(_) => break,
+                                    }
+                                }
+                                let text = String::from_utf8_lossy(&diagnostic.into_iter().collect::<Vec<_>>()).trim().to_string();
+                                let _ = tx.send(Err(if text.is_empty() { format!("Process exited with {status}") } else { text }));
+                                return;
+                            }
+                            let _ = tx.send(Ok(()));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        if let Some(tx) = reply.take() { let _ = tx.send(Err(e.to_string())); }
+                        let _ = process.kill();
+                        let _ = process.wait();
+                        return;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                if let Some(tx) = reply.take() { let _ = tx.send(Ok(())); }
+            }
+            if child.is_none() && eof { return; }
+            std::thread::sleep(Duration::from_millis(if reply.is_some() { 10 } else { 100 }));
+        }
+    });
+    rx.recv().map_err(|e| e.to_string())?
 }
 
 #[cfg(target_os = "linux")]

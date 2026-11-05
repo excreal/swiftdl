@@ -21,6 +21,7 @@ use swiftdl_engine::{CancellationToken, Client, Outcome, Progress};
 const SITES: &[&str] = &[
     "youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "x.com", "twitter.com", "reddit.com",
     "instagram.com", "tiktok.com", "facebook.com", "twitch.tv", "dailymotion.com", "soundcloud.com", "bilibili.com",
+    "xvideos.com", "xnxx.com", "hqporner.com",
 ];
 
 pub fn is_media_url(url: &str) -> bool {
@@ -29,6 +30,22 @@ pub fn is_media_url(url: &str) -> bool {
     let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
     let host = host.split(':').next().unwrap_or("").to_ascii_lowercase();
     SITES.iter().any(|s| host == *s || host.ends_with(&format!(".{s}")))
+}
+
+/// Dailymotion's configurable player id identifies the player, not a video.
+/// yt-dlp needs the actual video id from the embed's query parameters.
+fn download_url(url: &str) -> Result<String> {
+    let url = url.trim();
+    if let Ok(parsed) = tauri::Url::parse(url) {
+        if parsed.host_str() == Some("geo.dailymotion.com") && parsed.path().starts_with("/player/") {
+            let video = parsed.query_pairs().find(|(key, _)| key == "video").map(|(_, value)| value.into_owned());
+            let Some(video) = video.filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())) else {
+                bail!("This Dailymotion player link has no valid video ID. Copy the original dailymotion.com/video/... link, or a player link containing ?video=..., and try again.");
+            };
+            return Ok(format!("https://www.dailymotion.com/video/{video}"));
+        }
+    }
+    Ok(url.to_string())
 }
 
 /// Live status text for a media download ("Merging video and audio").
@@ -214,9 +231,9 @@ pub struct MediaInfo {
 
 /// Asks yt-dlp what the page offers, as a short list of qualities.
 pub async fn probe(client: &Client, url: &str, cookies: Option<String>) -> Result<MediaInfo> {
+    let url = download_url(url)?;
     let note: Note = Arc::default();
     let tools = ensure_tools(client, &note, false).await?;
-    let url = url.to_string();
     let out = tauri::async_runtime::spawn_blocking(move || {
         let mut cmd = command(&tools.ytdlp);
         cmd.args(["-J", "--no-playlist", "--no-warnings"]);
@@ -310,6 +327,7 @@ pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note,
     // yt-dlp resumes interrupted downloads from its .part/.ytdl files. The
     // engine's default is false until an HTTP range probe says otherwise.
     progress.resumable.store(true, Ordering::Relaxed);
+    let url = download_url(&job.url)?;
     let merges = job.format.contains('+');
     let tools = tokio::select! {
         biased;
@@ -347,7 +365,7 @@ pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note,
         cmd.arg("--add-headers").arg(format!("Cookie:{c}"));
     }
     // yt-dlp treats % in the output name as a template field.
-    cmd.arg("-o").arg(job.dest.to_string_lossy().replace('%', "%%")).arg(&job.url);
+    cmd.arg("-o").arg(job.dest.to_string_lossy().replace('%', "%%")).arg(&url);
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().context("couldn't start yt-dlp")?;
 
     let stdout = child.stdout.take().unwrap();
@@ -473,6 +491,27 @@ pub fn cleanup(dest: &Path) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn normalises_dailymotion_player_links_to_video_links() {
+        assert_eq!(download_url("https://geo.dailymotion.com/player/xtv3w.html?video=x123abc&autoplay=1").unwrap(), "https://www.dailymotion.com/video/x123abc");
+        assert_eq!(download_url("https://geo.dailymotion.com/player/xtv3w.html?autoplay=1&video=%78123abc").unwrap(), "https://www.dailymotion.com/video/x123abc");
+        let regular = "https://www.dailymotion.com/video/x123abc";
+        assert_eq!(download_url(regular).unwrap(), regular);
+        let youtube = "https://www.youtube.com/watch?v=abc123";
+        assert_eq!(download_url(youtube).unwrap(), youtube);
+    }
+
+    #[test]
+    fn player_id_is_not_mistaken_for_a_video_id() {
+        for url in [
+            "https://geo.dailymotion.com/player/xtv3w.html?",
+            "https://geo.dailymotion.com/player/xtv3w.html?video=",
+            "https://geo.dailymotion.com/player/xtv3w.html?video=bad%2Fid",
+        ] {
+            assert!(download_url(url).unwrap_err().to_string().contains("original dailymotion.com/video/"));
+        }
+    }
+
     #[tokio::test]
     async fn pause_before_tool_setup_does_not_download_tools() {
         let cancel = CancellationToken::new();
@@ -511,6 +550,18 @@ mod tests {
         assert!(is_media_url("https://m.youtube.com/shorts/x"));
         assert!(!is_media_url("https://drive.usercontent.google.com/download?id=1"));
         assert!(!is_media_url("https://notyoutube.com/watch"));
+    }
+
+    #[test]
+    fn recognises_additional_ytdlp_sites_without_matching_lookalikes() {
+        for site in ["xvideos.com", "xnxx.com", "hqporner.com"] {
+            for host in [site.to_string(), format!("www.{site}"), format!("m.{site}"), site.to_uppercase()] {
+                assert!(is_media_url(&format!("https://{host}/video/123")), "{host}");
+            }
+            assert!(!is_media_url(&format!("https://not{site}/video/123")));
+            assert!(!is_media_url(&format!("https://{site}.example.org/video/123")));
+            assert!(!is_media_url(&format!("https://example.org/?url=https://{site}/video/123")));
+        }
     }
 
     #[test]

@@ -9,7 +9,7 @@ const bytes = (n) => {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
 };
-const VIDEO_SITE = /(^|\.)(youtube\.com|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|bilibili\.com)$/i;
+const VIDEO_SITE = /(^|\.)(youtube\.com|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|bilibili\.com|xvideos\.com|xnxx\.com|hqporner\.com)$/i;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
 async function main() {
