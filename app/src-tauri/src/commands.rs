@@ -102,6 +102,43 @@ mod tests {
         assert!(check_add(&req("file:///etc/passwd", false)).is_err());
         assert!(check_add(&req("C:/not/there.torrent", true)).is_err());
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launcher_keeps_host_paths_but_not_bundled_paths() {
+        let app_dir = std::path::Path::new("/tmp/.mount_SwiftDL");
+        let value = std::ffi::OsStr::new("/tmp/.mount_SwiftDL/usr/lib:/usr/lib:/home/user/My Apps:/tmp/.mount_SwiftDL-other/lib");
+        assert_eq!(host_paths(value, app_dir).unwrap(), "/usr/lib:/home/user/My Apps:/tmp/.mount_SwiftDL-other/lib");
+        assert!(host_paths(std::ffi::OsStr::new("/tmp/.mount_SwiftDL/usr/lib"), app_dir).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_open_grants_only_owner_execute_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("swiftdl-open-{}.AppImage", std::process::id()));
+        std::fs::write(&path, b"\x7fELF\x02\x01\x01\x00AI\x02").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        prepare_appimage(&path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o740);
+        std::fs::write(&path, b"not an AppImage").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(prepare_appimage(&path).is_err());
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o640);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_file_opener_passes_paths_and_reports_failures() {
+        let path = std::path::Path::new("/Downloads/a video (1080p).mp4");
+        // With sh -c the first argument after the script is $0. A path must
+        // remain one literal argument, even with spaces and parentheses.
+        assert!(open_with_launchers(path, None, &[("sh", &["-c", "test \"$0\" = '/Downloads/a video (1080p).mp4'"])]).is_ok());
+        assert!(open_with_launchers(path, None, &[("false", &[]), ("true", &[])]).is_ok());
+        let error = open_with_launchers(path, None, &[("sh", &["-c", "echo 'No default video player' >&2; exit 1"])]).unwrap_err();
+        assert!(error.contains("No default video player"));
+    }
 }
 
 #[tauri::command]
@@ -120,9 +157,98 @@ pub fn remove(m: Mgr, ids: Vec<u64>, delete_files: bool) {
 }
 
 #[tauri::command]
-pub fn open_file(m: Mgr, id: u64) -> Result<(), String> {
+pub async fn open_file(m: Mgr<'_>, id: u64) -> Result<(), String> {
     let item = m.item(id).ok_or("not found")?;
-    m.app_handle().opener().open_path(item.path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    let path = std::fs::canonicalize(&item.path)
+        .map_err(|e| format!("Cannot open {}: {e}", item.path.display()))?;
+    #[cfg(target_os = "linux")]
+    {
+        tauri::async_runtime::spawn_blocking(move || open_linux_file(&path))
+            .await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        m.app_handle().opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_linux_file(path: &std::path::Path) -> Result<(), String> {
+    let app_dir = std::env::var_os("APPDIR").map(PathBuf::from);
+    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("AppImage")) {
+        prepare_appimage(path).map_err(|e| format!("Cannot launch {}: {e}", path.display()))?;
+        let mut cmd = std::process::Command::new(path);
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if let Some(dir) = &app_dir {
+            clean_appimage_environment(&mut cmd, dir);
+        }
+        // These describe SwiftDL's own bundle, not the app being launched.
+        cmd.env_remove("APPIMAGE").env_remove("APPDIR").env_remove("ARGV0");
+        let mut child = cmd.spawn().map_err(|e| format!("Cannot launch {}: {e}", path.display()))?;
+        std::thread::spawn(move || { let _ = child.wait(); });
+        return Ok(());
+    }
+    open_with_launchers(path, app_dir.as_deref(), &[("xdg-open", &[]), ("gio", &["open"])])
+}
+
+#[cfg(target_os = "linux")]
+fn open_with_launchers(path: &std::path::Path, app_dir: Option<&std::path::Path>, launchers: &[(&str, &[&str])]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for (program, args) in launchers {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(*args).arg(path).stdin(std::process::Stdio::null());
+        if let Some(dir) = app_dir {
+            clean_appimage_environment(&mut cmd, dir);
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) => errors.push(format!("{program}: {}", String::from_utf8_lossy(&out.stderr).trim())),
+            Err(e) => errors.push(format!("{program}: {e}")),
+        }
+    }
+    Err(format!("Could not open {} with its default application. {}", path.display(), errors.join("; ")))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_appimage(path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let mut header = [0; 11];
+    std::fs::File::open(path)?.read_exact(&mut header)?;
+    if &header[..4] != b"\x7fELF" || &header[8..10] != b"AI" || !matches!(header[10], 1 | 2) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "The downloaded file is not a valid AppImage"));
+    }
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    // Only grant the owner execute permission, and only after an Open click.
+    permissions.set_mode(permissions.mode() | 0o100);
+    std::fs::set_permissions(path, permissions)
+}
+
+// Bundled libraries/plugins are for SwiftDL, not the user's media player.
+// Revealing a file uses D-Bus, so it doesn't suffer from this inherited env.
+#[cfg(target_os = "linux")]
+fn clean_appimage_environment(cmd: &mut std::process::Command, app_dir: &std::path::Path) {
+    for key in ["PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "XDG_DATA_DIRS"] {
+        if let Some(value) = std::env::var_os(key) {
+            if let Some(value) = host_paths(&value, app_dir) {
+                cmd.env(key, value);
+            } else {
+                cmd.env_remove(key);
+            }
+        }
+    }
+    for key in ["GIO_MODULE_DIR", "GIO_EXTRA_MODULES", "GDK_PIXBUF_MODULE_FILE", "GDK_PIXBUF_MODULEDIR", "GTK_PATH", "GTK_EXE_PREFIX", "GTK_DATA_PREFIX", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH"] {
+        if std::env::var_os(key).is_some_and(|v| std::env::split_paths(&v).any(|p| p.starts_with(app_dir))) {
+            cmd.env_remove(key);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn host_paths(value: &std::ffi::OsStr, app_dir: &std::path::Path) -> Option<std::ffi::OsString> {
+    let paths: Vec<_> = std::env::split_paths(value).filter(|p| !p.starts_with(app_dir)).collect();
+    if paths.is_empty() { None } else { std::env::join_paths(paths).ok() }
 }
 
 #[tauri::command]

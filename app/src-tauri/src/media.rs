@@ -311,7 +311,11 @@ pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note,
     // engine's default is false until an HTTP range probe says otherwise.
     progress.resumable.store(true, Ordering::Relaxed);
     let merges = job.format.contains('+');
-    let tools = ensure_tools(client, &note, merges).await?;
+    let tools = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Ok(Outcome::Paused),
+        tools = ensure_tools(client, &note, merges) => tools?,
+    };
     if merges && tools.ffmpeg.is_none() {
         bail!("Joining video and audio needs ffmpeg. Install it (brew install ffmpeg, or sudo apt install ffmpeg) and try again.");
     }
@@ -324,6 +328,13 @@ pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note,
     set_note(&note, "Getting video details");
 
     let mut cmd = command(&tools.ytdlp);
+    // The standalone yt-dlp binary launches a Python child, and may launch
+    // ffmpeg too. Keep them in one group so pause stops all pipe writers.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.args(["-f", &job.format, "--no-playlist", "--newline", "--no-colors", "--no-mtime", "-N", "4"])
         .args(["--progress-template", "download:SDL|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s"]);
     if merges {
@@ -342,13 +353,13 @@ pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note,
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let errors = Arc::new(Mutex::new(String::new()));
-    {
+    let error_reader = {
         let errors = errors.clone();
         std::thread::spawn(move || {
             let text: String = BufReader::new(stderr).lines().map_while(Result::ok).collect::<Vec<_>>().join("\n");
             *errors.lock().unwrap() = text;
-        });
-    }
+        })
+    };
     let reader = {
         let (progress, note) = (progress.clone(), note.clone());
         std::thread::spawn(move || read_progress(stdout, &progress, &note))
@@ -361,6 +372,7 @@ pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note,
     };
     let exit = waiter.await??;
     let _ = reader.join();
+    let _ = error_reader.join();
     progress.connections.store(0, Ordering::Relaxed);
     *note.lock().unwrap() = None;
 
@@ -385,6 +397,18 @@ fn wait(child: &Mutex<Child>, cancel: &CancellationToken) -> Result<Option<bool>
     loop {
         if cancel.is_cancelled() {
             let mut c = child.lock().unwrap();
+            #[cfg(unix)]
+            {
+                // SAFETY: yt-dlp was started in its own process group, whose
+                // id is the child's pid. A negative pid targets that group.
+                unsafe { libc::kill(-(c.id() as i32), libc::SIGKILL); }
+            }
+            #[cfg(windows)]
+            {
+                let _ = command(Path::new("taskkill"))
+                    .args(["/PID", &c.id().to_string(), "/T", "/F"])
+                    .stdout(Stdio::null()).stderr(Stdio::null()).status();
+            }
             let _ = c.kill();
             let _ = c.wait();
             return Ok(None);
@@ -448,6 +472,37 @@ pub fn cleanup(dest: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pause_before_tool_setup_does_not_download_tools() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let job = Job { url: "https://example.invalid/video".into(), format: "b".into(), dest: "unused.mp4".into(), cookies: None };
+        let result = run(&swiftdl_engine::build_client().unwrap(), job, Arc::default(), Note::default(), cancel).await.unwrap();
+        assert!(matches!(result, Outcome::Paused));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pause_stops_descendants_and_closes_progress_pipe() {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & echo ready; wait"])
+            .process_group(0).stdout(Stdio::piped()).spawn().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert_eq!(wait(&Mutex::new(child), &cancel).unwrap(), None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = String::new();
+            tx.send(stdout.read_to_string(&mut rest)).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(2)).expect("a descendant kept stdout open after pause").unwrap();
+    }
 
     #[test]
     fn recognises_video_sites() {

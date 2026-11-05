@@ -336,6 +336,7 @@ function render() {
       <div class="p-line"><div class="p-bar" id="p-bar"><i></i></div><span class="p-pct" id="p-pct"></span></div>
       <div class="p-meta"><span id="p-left"></span><span id="p-right"></span></div>
       <div class="kv" id="p-kv"></div>
+      <div class="st err" id="p-action-error" role="alert" hidden></div>
       ${showDetails ? `<div class="conn"><div class="conn-head"><b>Connections</b><span id="p-conn-n"></span></div><div class="lanes" id="p-lanes"></div>
         <div class="cscroll"><table class="ctable"><thead><tr><th>#</th><th>Downloaded</th><th>Progress</th><th>Status</th></tr></thead><tbody id="p-rows"></tbody></table></div></div>` : ""}
       <div class="d-foot">
@@ -402,8 +403,16 @@ view.addEventListener("click", async (e) => {
     case "details": details = !details; render(); break;
     case "pause": invoke("pause", { ids: [id] }); break;
     case "resume": layout = ""; invoke("resume", { ids: [id] }); break;
-    case "open": invoke("open_file", { id }); $("w-close").click(); break;
-    case "folder": invoke("open_folder", { id }); break;
+    case "open":
+    case "folder":
+      try {
+        $("p-action-error").hidden = true;
+        await invoke(b.dataset.a === "open" ? "open_file" : "open_folder", { id });
+      } catch (error) {
+        $("p-action-error").textContent = String(error);
+        $("p-action-error").hidden = false;
+      }
+      break;
     case "close": $("w-close").click(); break;
     case "cancel":
       // Ask twice instead of a second dialog: the button arms for 3 s.
