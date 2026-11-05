@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SwiftDL Integration",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Sends your downloads to SwiftDL for faster, resumable downloading, and adds a download button to videos.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv7cQHJNI1Ib1uldwt9Lu3KiQRdmEQAXUeyR790YkmUDXyCDlU7kO9LNaBJGGdvZsZ1WUwyszhyK1DHwmUj3XSONJBfo6V8B6bz/RcV+wNEQXWrzRqPszIxUJs/r7IXH0aUMyF0cRyKUO2+LJ+YEdwrGx/LyoFYb8DgUNGsDLgUXTHBVUQyrXKRoJhK45xPVXq9DELiJXDandfFcB5xRFET8uYdmmZSZFEAi6l3NbnOHMLULdoUoyI9JMVINaHUdnMmXxDZd6ZaCht5OgqcwRYdEGgai+9M73b5PHQYds4ey5h1NBHYkBNbMjFSG7/FH9v1sNXmmBO+bwBLZYRqUS6wIDAQAB",
   "permissions": ["downloads", "nativeMessaging", "cookies", "contextMenus", "storage", "webRequest"],

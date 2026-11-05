@@ -117,6 +117,12 @@ async function confirmView(token) {
   if (inc.cookies) headers.push(["Cookie", inc.cookies]);
   if (inc.referrer) headers.push(["Referer", inc.referrer]);
   if (inc.userAgent) headers.push(["User-Agent", inc.userAgent]);
+  for (const [name, value] of inc.mediaHeaders || []) {
+    if (!["referer", "origin", "user-agent", "accept", "accept-language"].includes(name.toLowerCase())) continue;
+    const existing = headers.findIndex(([key]) => key.toLowerCase() === name.toLowerCase());
+    if (existing >= 0) headers.splice(existing, 1);
+    headers.push([name, value]);
+  }
   let dir = settings.downloadDir, dirTouched = false, info = null;
   if (inc.streamKind === "hls" || await invoke("is_media_url", { url: inc.url })) return mediaView(token, inc, settings, headers);
   if (await invoke("is_torrent_url", { url: inc.url, filename: inc.filename || null })) return torrentView(token, inc, settings, headers);

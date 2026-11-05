@@ -79,7 +79,7 @@ fn cookie_matches(cookie: &Cookie, url: &tauri::Url) -> bool {
 }
 
 pub fn request_headers(url: &tauri::Url, headers: &[(String, String)], cookies: &[Cookie]) -> swiftdl_engine::header::HeaderMap {
-    let mut forwarded: Vec<_> = headers.iter().filter(|(key, _)| ["referer", "user-agent", "origin"].iter().any(|name| key.eq_ignore_ascii_case(name))).cloned().collect();
+    let mut forwarded: Vec<_> = headers.iter().filter(|(key, _)| is_session_header(key)).cloned().collect();
     let cookie = cookies.iter().filter(|c| cookie_matches(c, url)).map(|c| format!("{}={}", c.name, c.value)).collect::<Vec<_>>().join("; ");
     if !cookie.is_empty() { forwarded.push(("Cookie".into(), cookie)); }
     crate::manager::to_header_map(&forwarded)
@@ -88,6 +88,10 @@ pub fn request_headers(url: &tauri::Url, headers: &[(String, String)], cookies: 
 struct Auth {
     jar: tempfile::NamedTempFile,
     headers: Vec<(String, String)>,
+}
+
+pub fn is_session_header(name: &str) -> bool {
+    ["referer", "user-agent", "origin", "accept", "accept-language"].iter().any(|key| name.eq_ignore_ascii_case(key))
 }
 
 impl Auth {
@@ -110,7 +114,9 @@ impl Auth {
         for (name, value) in &self.headers {
             if name.eq_ignore_ascii_case("referer") { cmd.arg("--referer").arg(value); }
             if name.eq_ignore_ascii_case("user-agent") { cmd.arg("--user-agent").arg(value); }
-            if name.eq_ignore_ascii_case("origin") { cmd.arg("--add-headers").arg(format!("Origin:{value}")); }
+            if ["origin", "accept", "accept-language"].iter().any(|key| name.eq_ignore_ascii_case(key)) {
+                cmd.arg("--add-headers").arg(format!("{name}:{value}"));
+            }
         }
     }
 }
@@ -324,7 +330,9 @@ async fn probe_inner(client: &Client, url: &str, headers: Vec<(String, String)>,
     let url = download_url(url)?;
     let hls = stream_kind == Some(StreamKind::Hls) || is_hls_url(&url);
     let cookies = scoped_cookies(&url, &headers, &cookies);
-    let playable = if hls { Some(crate::hls::vod_playlists(&url, &headers, &cookies).await?) } else { None };
+    let playable = if hls {
+        Some(crate::hls::vod_playlists(&url, &headers, &cookies).await?)
+    } else { None };
     let auth = Auth::new(&url, &headers, &cookies)?;
     let note: Note = Arc::default();
     let tools = match tools { Some(tools) => tools, None => ensure_tools(client, &note, false).await? };
@@ -722,6 +730,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn browser_session_headers_are_used_without_impersonation() {
+        let headers = vec![
+            ("Referer".into(), "https://player.example.test/".into()),
+            ("User-Agent".into(), "captured-browser-agent".into()),
+            ("Origin".into(), "https://player.example.test".into()),
+            ("Accept".into(), "*/*".into()),
+            ("Accept-Language".into(), "en-US,en;q=0.9".into()),
+        ];
+        let auth = Auth::new("https://cdn.example.test/video.m3u8", &headers, &[]).unwrap();
+        let mut cmd = Command::new("yt-dlp");
+        auth.apply(&mut cmd);
+        let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().into_owned()).collect();
+        assert!(!args.iter().any(|s| s.contains("impersonate")));
+        assert!(args.iter().any(|s| s == "captured-browser-agent"));
+        assert!(args.iter().any(|s| s == "Origin:https://player.example.test"));
+        assert!(args.iter().any(|s| s == "Accept:*/*"));
+        assert!(args.iter().any(|s| s == "Accept-Language:en-US,en;q=0.9"));
+        let forwarded = request_headers(&tauri::Url::parse("https://cdn.example.test/video.m3u8").unwrap(), &headers, &[]);
+        assert_eq!(forwarded["user-agent"], "captured-browser-agent");
+        assert_eq!(forwarded["accept-language"], "en-US,en;q=0.9");
+    }
+
+    #[test]
     fn cookie_scope_and_cookie_jar_are_preserved() {
         let cookie = Cookie { name: "session".into(), value: "secret".into(), domain: ".example.test".into(), path: "/media".into(), secure: true, host_only: false, expiration_date: None };
         assert!(cookie_matches(&cookie, &tauri::Url::parse("https://cdn.example.test/media/segment.ts").unwrap()));
@@ -787,7 +818,13 @@ mod tests {
     async fn local_hls_vod_download_and_resume() {
         let base = std::env::var("SWIFTDL_HLS_FIXTURE").expect("use tools/test-hls.py");
         let client = swiftdl_engine::build_client().unwrap();
-        let headers = vec![("Referer".into(), "https://fixture.test/watch".into()), ("User-Agent".into(), "SwiftDL-HLS-test".into())];
+        let headers = vec![
+            ("Referer".into(), "https://fixture.test/watch".into()),
+            ("Origin".into(), "https://fixture.test".into()),
+            ("User-Agent".into(), "SwiftDL-HLS-test".into()),
+            ("Accept".into(), "*/*".into()),
+            ("Accept-Language".into(), "en-US,en;q=0.9".into()),
+        ];
         let cookies = vec![Cookie { name: "session".into(), value: "fixture-only".into(), domain: "127.0.0.1".into(), path: "/".into(), host_only: true, secure: false, expiration_date: None }];
         let tools = || Some(Tools { ytdlp: "yt-dlp".into(), ffmpeg: ffmpeg_dir() });
         let dir = tempfile::tempdir().unwrap();

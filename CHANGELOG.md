@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-05
+
+### Fixed
+- Preserve observed browser Referer, Origin, User-Agent, Accept and Accept-Language headers for HLS inspection and downloads on all hosts, with scoped cookies and without forced browser impersonation or raw credential-header copying.
+- Clear detected media on same-page reloads and replace duplicate playlist entries with refreshed signatures without rewriting download URLs.
+
 ## [0.3.4] - 2026-11-05
 
 ### Fixed
@@ -161,7 +167,8 @@ uses [Semantic Versioning](https://semver.org/).
 - GitHub Actions for CI and tagged releases (Windows, macOS, Linux and the
   extension zip).
 
-[Unreleased]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.2...v0.3.3
 [0.3.1]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.0...v0.3.1

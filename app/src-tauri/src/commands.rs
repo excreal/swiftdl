@@ -493,5 +493,5 @@ pub async fn probe_media(m: Mgr<'_>, url: String, cookies: Option<String>, heade
 pub fn open_new_download(m: Mgr, url: String, stream_kind: Option<crate::media::StreamKind>, headers: Option<Vec<(String, String)>>) {
     let headers = headers.unwrap_or_default();
     let value = |name: &str| headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone());
-    m.new_download_window(Incoming { url: url.trim().to_string(), filename: None, referrer: value("referer"), cookies: value("cookie"), user_agent: value("user-agent"), stream_kind, media_cookies: vec![] });
+    m.new_download_window(Incoming { url: url.trim().to_string(), filename: None, referrer: value("referer"), cookies: value("cookie"), user_agent: value("user-agent"), media_headers: headers.clone(), stream_kind, media_cookies: vec![] });
 }

@@ -87,7 +87,10 @@ def main():
                         self.wfile.write(b"#EXTM3U\n#EXTINF:1,\na.ts\n#EXT-X-ENDLIST\n")
                     return
                 if (self.headers.get("Referer") != "https://fixture.test/watch"
+                        or self.headers.get("Origin") != "https://fixture.test"
                         or self.headers.get("User-Agent") != "SwiftDL-HLS-test"
+                        or self.headers.get("Accept") != "*/*"
+                        or self.headers.get("Accept-Language") != "en-US,en;q=0.9"
                         or "session=fixture-only" not in self.headers.get("Cookie", "")):
                     self.send_error(403)
                     return

@@ -88,6 +88,8 @@ pub struct Incoming {
     #[serde(default)]
     pub user_agent: Option<String>,
     #[serde(default)]
+    pub media_headers: Vec<(String, String)>,
+    #[serde(default)]
     pub stream_kind: Option<crate::media::StreamKind>,
     #[serde(default)]
     pub media_cookies: Vec<crate::media::Cookie>,
@@ -103,7 +105,7 @@ impl Incoming {
     }
 
     pub fn headers(&self) -> Vec<(String, String)> {
-        let mut h = vec![];
+        let mut h: Vec<(String, String)> = vec![];
         if let Some(c) = self.cookies.as_ref().filter(|c| !c.is_empty()) {
             h.push(("Cookie".into(), c.clone()));
         }
@@ -112,6 +114,12 @@ impl Incoming {
         }
         if let Some(u) = self.user_agent.as_ref().filter(|u| !u.is_empty()) {
             h.push(("User-Agent".into(), u.clone()));
+        }
+        for (name, value) in &self.media_headers {
+            if crate::media::is_session_header(name) {
+                h.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+                h.push((name.clone(), value.clone()));
+            }
         }
         h
     }
@@ -696,6 +704,19 @@ fn available_dest(dir: &Path, filename: &str, reserved: impl Fn(&Path) -> bool) 
 #[cfg(test)]
 mod destination_tests {
     use super::*;
+
+    #[test]
+    fn incoming_media_headers_preserve_origin_and_override_guessed_referrer() {
+        let incoming: Incoming = serde_json::from_value(serde_json::json!({
+            "url": "https://cdn.test/video.m3u8", "referrer": "https://kwik.cx/e/fixture", "userAgent": "fallback",
+            "mediaHeaders": [["Referer", "https://kwik.cx/"], ["Origin", "https://kwik.cx"], ["User-Agent", "observed"], ["Cookie", "must-not-copy"], ["Authorization", "must-not-copy"]]
+        })).unwrap();
+        let headers = incoming.headers();
+        assert_eq!(headers.len(), 3);
+        assert!(headers.contains(&("Referer".into(), "https://kwik.cx/".into())));
+        assert!(headers.contains(&("Origin".into(), "https://kwik.cx".into())));
+        assert!(headers.contains(&("User-Agent".into(), "observed".into())));
+    }
 
     #[test]
     fn reserves_queued_running_and_partial_destinations() {

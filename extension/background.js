@@ -57,14 +57,18 @@ async function sendToApp({ url, referrer, filename, streamKind, tabId }) {
     if (name) filename = name;
   }
   const hls = streamKind === "hls" || /\.m3u8(?:$|[?#])/i.test(url);
+  const detected = tabId != null ? (await mediaFor(tabId)).find((m) => m.url === url) : null;
+  const mediaHeaders = detected?.requestHeaders || [];
+  const observed = (name) => mediaHeaders.find(([key]) => key.toLowerCase() === name)?.[1];
   const { [`hls-context:${tabId}`]: context = [] } = hls && tabId != null ? await chrome.storage.session.get(`hls-context:${tabId}`) : {};
   const message = {
     type: "download",
     url,
-    referrer: referrer || "",
+    referrer: observed("referer") ?? referrer ?? "",
     filename: filename ? filename.split(/[\\/]/).pop() : "",
     cookies: hls ? "" : await cookieHeader(url),
-    userAgent: navigator.userAgent,
+    userAgent: observed("user-agent") || navigator.userAgent,
+    mediaHeaders,
     streamKind: hls ? "hls" : undefined,
     mediaCookies: hls ? await mediaCookies([url, referrer, ...context]) : [],
   };
@@ -181,8 +185,43 @@ function classify(url, mime, size) {
   return "file";
 }
 
+function mediaIdentity(url, kind) {
+  if (kind !== "hls") return url;
+  const identity = new URL(url);
+  // Only discard known rotating credentials/cache busters for display identity.
+  // Keep media selectors (id, language, quality, etc.) and the actual download URL.
+  for (const name of [...identity.searchParams.keys()]) {
+    if (/^(token|sig|signature|expires?|exp|policy|key-pair-id|hdnts|hdnea|rn|rbuf|_)$/i.test(name)) identity.searchParams.delete(name);
+  }
+  identity.hash = "";
+  identity.searchParams.sort();
+  return identity.href;
+}
+
 function header(headers, name) {
   return headers?.find((h) => h.name.toLowerCase() === name)?.value || "";
+}
+
+// Frame URLs are not necessarily the Referer sent on the wire: referrer
+// policy often reduces them to an origin. Never capture Cookie/Authorization
+// here; cookies retain their domain/path scope through mediaCookies instead.
+const captureRequestHeaders = (d) => {
+  if (d.tabId < 0) return;
+  const headers = (d.requestHeaders || []).filter((h) => ["referer", "origin", "user-agent", "accept", "accept-language"].includes(h.name.toLowerCase()) && typeof h.value === "string")
+    .map((h) => [h.name, h.value]);
+  if (!headers.some(([name]) => name.toLowerCase() === "referer")) headers.push(["Referer", ""]);
+  return updateTab(d.tabId, async () => {
+    const requestKey = `media-requests:${d.tabId}`;
+    const { [requestKey]: requests = [] } = await chrome.storage.session.get(requestKey);
+    await chrome.storage.session.set({ [requestKey]: [{ id: d.requestId, url: d.url, headers }, ...requests.filter((r) => r.id !== d.requestId)].slice(0, 128) });
+  });
+};
+const requestFilter = { urls: ["http://*/*", "https://*/*"], types: ["media", "xmlhttprequest", "other", "object"] };
+try {
+  chrome.webRequest.onBeforeSendHeaders.addListener(captureRequestHeaders, requestFilter, ["requestHeaders", "extraHeaders"]);
+} catch {
+  // Firefox does not expose Chromium's extraHeaders option.
+  chrome.webRequest.onBeforeSendHeaders.addListener(captureRequestHeaders, requestFilter, ["requestHeaders"]);
 }
 
 chrome.webRequest.onResponseStarted.addListener(
@@ -207,8 +246,11 @@ chrome.webRequest.onResponseStarted.addListener(
     const url = d.url;
     await updateTab(d.tabId, async () => {
       const { [key(d.tabId)]: list = [] } = await chrome.storage.session.get(key(d.tabId));
-      if (list.some((m) => m.url === url)) return;
-      list.unshift({ url, kind, mime, size, frameId: d.frameId, pageUrl: d.documentUrl, at: Date.now() });
+      const { [`media-requests:${d.tabId}`]: requests = [] } = await chrome.storage.session.get(`media-requests:${d.tabId}`);
+      const request = requests.find((r) => r.id === d.requestId && r.url === d.url);
+      const previous = list.find((m) => m.kind === kind && mediaIdentity(m.url, kind) === mediaIdentity(url, kind));
+      if (previous) list.splice(list.indexOf(previous), 1);
+      list.unshift({ url, kind, mime, size, frameId: d.frameId, pageUrl: d.documentUrl, requestHeaders: request?.headers || previous?.requestHeaders, at: Date.now() });
       await chrome.storage.session.set({ [key(d.tabId)]: list.slice(0, 25) });
       await refreshBadge(d.tabId);
     });
@@ -231,9 +273,9 @@ async function refreshBadge(tabId) {
 
 // A new page in the tab starts a fresh list.
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === "loading" && info.url) updateTab(tabId, () => chrome.storage.session.remove([key(tabId), `hls-context:${tabId}`, `media-frames:${tabId}`])).then(() => refreshBadge(tabId));
+  if (info.status === "loading") updateTab(tabId, () => chrome.storage.session.remove([key(tabId), `hls-context:${tabId}`, `media-frames:${tabId}`, `media-requests:${tabId}`])).then(() => refreshBadge(tabId));
 });
-chrome.tabs.onRemoved.addListener((tabId) => updateTab(tabId, () => chrome.storage.session.remove([key(tabId), `hls-context:${tabId}`, `media-frames:${tabId}`])));
+chrome.tabs.onRemoved.addListener((tabId) => updateTab(tabId, () => chrome.storage.session.remove([key(tabId), `hls-context:${tabId}`, `media-frames:${tabId}`, `media-requests:${tabId}`])));
 
 // ---------- right-click menu ----------
 

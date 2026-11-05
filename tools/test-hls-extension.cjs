@@ -8,7 +8,7 @@ async function main() {
   const state = {};
   const messages = [];
   const cookieLookups = [];
-  let response, message, badge, contextMenu, downloadCreated;
+  let response, message, badge, contextMenu, downloadCreated, requestHeaders, tabUpdated;
   let extraTabs = [];
   const downloadEvents = [];
   let tab = { id: 7, url: "https://page.example.test/watch", title: "Fixture" };
@@ -27,8 +27,11 @@ async function main() {
       erase: async () => downloadEvents.push("erase"),
       resume: async () => downloadEvents.push("resume"),
     },
-    webRequest: { onResponseStarted: { addListener: (fn) => { response = fn; } } },
-    tabs: { onUpdated: event(), onRemoved: event(), get: async (id) => [tab, ...extraTabs].find((t) => t.id === id), query: async () => [tab, ...extraTabs] },
+    webRequest: {
+      onResponseStarted: { addListener: (fn) => { response = fn; } },
+      onBeforeSendHeaders: { addListener: (fn) => { requestHeaders = fn; } },
+    },
+    tabs: { onUpdated: { addListener: (fn) => { tabUpdated = fn; } }, onRemoved: event(), get: async (id) => [tab, ...extraTabs].find((t) => t.id === id), query: async () => [tab, ...extraTabs] },
     action: { setBadgeText: (value) => { badge = value; }, setBadgeBackgroundColor() {} },
     contextMenus: { onClicked: { addListener: (fn) => { contextMenu = fn; } }, removeAll() {}, create() {} },
     cookies: { getAll: async ({ url }) => {
@@ -131,6 +134,47 @@ async function main() {
   assert.equal(uiContext.dirFor({ downloadDir: "C:\\Downloads", sortIntoCategories: true }, "Video"), "C:\\Downloads\\Video");
   assert.equal(uiContext.dirFor({ downloadDir: "/", sortIntoCategories: true }, "Video"), "/Video");
   assert.equal(decodeURIComponent(encodeURIComponent(signed)), signed, "overlay attribute encoding must preserve signed URLs");
+  const protectedUrl = "https://vault-99.owocdn.top/stream/fixture/index.m3u8?token=exact%2Fvalue";
+  await requestHeaders({ tabId: 7, requestId: "protected", url: protectedUrl, requestHeaders: [
+    { name: "Referer", value: "https://kwik.cx/" },
+    { name: "Origin", value: "https://kwik.cx" },
+    { name: "User-Agent", value: "observed-browser-agent" },
+    { name: "Accept", value: "*/*" },
+    { name: "Accept-Language", value: "en-US,en;q=0.9" },
+    { name: "Cookie", value: "must-not-be-copied" },
+    { name: "Authorization", value: "must-not-be-copied" },
+  ] });
+  await response({ tabId: 7, requestId: "protected", frameId: 3, documentUrl: "https://kwik.cx/e/fixture", url: protectedUrl, statusCode: 200, responseHeaders: [{ name: "Content-Type", value: "application/vnd.apple.mpegurl" }] });
+  assert.equal((await grab(protectedUrl, "episode")).ok, true);
+  assert.equal(messages.at(-1).referrer, "https://kwik.cx/", "use observed wire Referer, not the frame URL");
+  assert.equal(messages.at(-1).userAgent, "observed-browser-agent");
+  assert(messages.at(-1).mediaHeaders.some(([key, value]) => key === "Origin" && value === "https://kwik.cx"));
+  assert(messages.at(-1).mediaHeaders.some(([key, value]) => key === "Accept-Language" && value === "en-US,en;q=0.9"));
+  assert(!JSON.stringify(messages.at(-1)).includes("must-not-be-copied"), "never copy raw credentials from observed request headers");
+  const rotated = protectedUrl.replace("token=exact%2Fvalue", "token=new%2Fsignature");
+  await detected(rotated, "application/vnd.apple.mpegurl");
+  assert.equal(state["media:7"].filter((m) => m.url.startsWith("https://vault-99.owocdn.top/")).length, 1, "rotating tokens should replace the same playlist entry");
+  assert(state["media:7"].some((m) => m.url === rotated), "keep the complete newest signed URL");
+  await detected(`${rotated}&quality=720`, "application/vnd.apple.mpegurl");
+  assert.equal(state["media:7"].filter((m) => m.url.startsWith("https://vault-99.owocdn.top/")).length, 2, "do not merge distinct media/quality selectors");
+  await requestHeaders({ tabId: 7, requestId: "no-referrer", url: rotated, requestHeaders: [] });
+  await response({ tabId: 7, requestId: "no-referrer", url: rotated, frameId: 3, statusCode: 200, responseHeaders: [{ name: "Content-Type", value: "application/vnd.apple.mpegurl" }] });
+  await grab(rotated, "episode");
+  assert.equal(messages.at(-1).referrer, "", "respect browser no-referrer policy rather than inventing a Referer");
+  await tabUpdated(7, { status: "loading" });
+  // Tab listeners schedule storage changes; a message joins the per-tab queue.
+  await new Promise((resolve) => message({ type: "frame-context" }, { tab, frameId: 0, url: tab.url }, resolve));
+  assert.equal(state["media:7"], undefined, "same-URL reloads must clear stale media");
+  assert.equal(state["media-requests:7"], undefined, "reloads must clear captured request headers");
+  let firefoxFallback = 0;
+  chrome.webRequest.onBeforeSendHeaders.addListener = (_, __, options) => {
+    if (options.includes("extraHeaders")) throw new Error("Unsupported Firefox option");
+    firefoxFallback++;
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../extension/background.js"), "utf8"), {
+    chrome, console, URL, navigator: { userAgent: "fixture-browser" }, setTimeout() {},
+  });
+  assert.equal(firefoxFallback, 1, "Firefox must register the header listener without Chromium-only options");
   console.log("HLS extension detection, signed URL, badge and scoped-cookie handoff checks passed");
   console.log("HQPorner embedded-player filename and direct-download handoff checks passed");
 }

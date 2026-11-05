@@ -180,7 +180,9 @@ Finished, non-DRM HLS videos (VOD) can be downloaded from any host, not only the
 
 SwiftDL preserves signed playlist URLs and forwards Referer, User-Agent and domain-scoped cookies for the page and observed media requests. Pause keeps fragment checkpoints for resume, provided the URL and authentication remain valid. If a link expires, refresh the page and capture it again. Login schemes using browser-only state or custom authorization headers may not work. Live/event streams without an end marker, DRM, SAMPLE-AES and DASH streams are not supported in this phase.
 
-Local regression checks: `node tools/test-hls-extension.cjs` and `python3 tools/test-hls.py` (requires yt-dlp, ffmpeg and ffprobe on PATH). The latter generates authenticated MPEG-TS, fragmented MP4 and AES-128 fixtures and checks downloading, remuxing and pause/resume without contacting public sites.
+For extension-captured streams on any host, SwiftDL preserves the observed Referer, Origin, User-Agent, Accept and Accept-Language rather than guessing them from the containing page. These session headers and scoped cookies are reused for playlist inspection, extraction, keys and segments, without forcing browser impersonation. CAPTCHA verification still takes place manually in your browser. Sites requiring browser-specific TLS fingerprints may still reject non-browser clients even with matching session headers.
+
+Local regression checks: `node tools/test-hls-extension.cjs` and `python3 tools/test-hls.py` (requires yt-dlp, ffmpeg and ffprobe on PATH). The latter generates authenticated MPEG-TS, fragmented MP4 and AES-128 fixtures and checks session-header forwarding, downloading, remuxing and pause/resume without contacting public sites.
 </details>
 
 <details>
