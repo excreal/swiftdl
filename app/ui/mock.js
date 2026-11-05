@@ -166,7 +166,12 @@
     get_item: ({ id }) => JSON.parse(JSON.stringify(items.find((i) => i.id === id) || null)),
     confirm_info: () => (location.search.includes("torrent") ? { url: "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Blender+Open+Movies", filename: "" } : VIDEO && !location.search.includes("yt") ? { url: "https://releases.ubuntu.com/26.04.1/ubuntu-26.04.1-desktop-amd64.iso", filename: "", referrer: "https://ubuntu.com/download/desktop" } : location.search.includes("yt") ? { url: "https://www.youtube.com/watch?v=aqz-KE-bpKQ", filename: "" } : { url: "https://cdn.example.net/releases/Obsidian-2.4.1-setup.exe", filename: "", referrer: "https://obsidian.example.net/download" }),
     forget_confirm: () => {}, show_main: () => {},
-    is_media_url: ({ url }) => /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|xvideos\.com|xnxx\.com|hqporner\.com)\//i.test(url.replace(/^https?:\/\//i, "").replace(/^www\./i, "")),
+    is_media_url: ({ url }) => {
+      try {
+        const host = new URL(url.trim()).hostname;
+        return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com|vimeo\.com|x\.com|twitter\.com|reddit\.com|instagram\.com|tiktok\.com|facebook\.com|twitch\.tv|dailymotion\.com|soundcloud\.com|bilibili\.com|xvideos\.com|xnxx\.com|hqporner\.com)$/i.test(host);
+      } catch { return false; }
+    },
     open_new_download: () => {},
     is_torrent_url: ({ url, filename }) => /^magnet:|\.torrent($|\?)/i.test(url) || /\.torrent$/i.test(filename || ""),
     probe_torrent: async () => {
