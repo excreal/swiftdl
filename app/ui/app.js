@@ -372,7 +372,7 @@ function renderInspector() {
   const props = `
     <dt>Location</dt><dd><span class="link" data-ins="folder" title="${esc(it.path)}">${esc(dir)}</span><button class="copy" data-ins="copy-path" title="Copy path">${icon("copy")}</button></dd>
     <dt>Source</dt><dd><span title="${esc(it.url)}">${esc(it.url)}</span><button class="copy" data-ins="copy" title="Copy link">${icon("copy")}</button></dd>
-    <dt>Resumable</dt><dd><span>${it.resumable ? "Yes" : "No, the server doesn't support it"}</span></dd>
+    <dt>Resumable</dt><dd><span>${it.format ? "Yes" : it.resumable ? "Yes" : "No, the server doesn't support it"}</span></dd>
     <dt>Added</dt><dd><span>${new Date(it.addedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span></dd>
     ${it.error ? `<dt>Error</dt><dd><span style="color:var(--red)" title="${esc(it.error)}">${esc(it.error)}</span></dd>` : ""}`;
   if ($("ins-props").innerHTML !== props) $("ins-props").innerHTML = props;

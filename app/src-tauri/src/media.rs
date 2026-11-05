@@ -307,6 +307,9 @@ pub struct Job {
 /// Cancelling stops yt-dlp; its partial files stay, so running the same job
 /// again continues where it left off.
 pub async fn run(client: &Client, job: Job, progress: Arc<Progress>, note: Note, cancel: CancellationToken) -> Result<Outcome> {
+    // yt-dlp resumes interrupted downloads from its .part/.ytdl files. The
+    // engine's default is false until an HTTP range probe says otherwise.
+    progress.resumable.store(true, Ordering::Relaxed);
     let merges = job.format.contains('+');
     let tools = ensure_tools(client, &note, merges).await?;
     if merges && tools.ffmpeg.is_none() {
