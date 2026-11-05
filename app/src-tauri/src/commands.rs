@@ -27,6 +27,7 @@ pub struct ProbeInfo {
     resumable: bool,
     category: String,
     dir: PathBuf,
+    stream_kind: Option<crate::media::StreamKind>,
 }
 
 #[tauri::command]
@@ -36,6 +37,10 @@ pub fn get_state(m: Mgr) -> AppState {
 
 #[tauri::command]
 pub async fn probe_url(m: Mgr<'_>, url: String, headers: Vec<(String, String)>) -> Result<ProbeInfo, String> {
+    let extensionless = tauri::Url::parse(url.trim()).ok().is_some_and(|u| matches!(u.scheme(), "http" | "https") && std::path::Path::new(u.path()).extension().is_none());
+    if crate::media::is_hls_url(&url) || (extensionless && crate::hls::detect(url.trim(), &headers).await.unwrap_or(false)) {
+        return Ok(ProbeInfo { filename: "video.mkv".into(), size: None, resumable: true, category: "Video".into(), dir: m.default_dir("Video"), stream_kind: Some(crate::media::StreamKind::Hls) });
+    }
     let remote = swiftdl_engine::probe(m.client(), url.trim(), &to_header_map(&headers)).await.map_err(|e| format!("{e:#}"))?;
     let category = category_for(&remote.filename).to_string();
     Ok(ProbeInfo {
@@ -44,6 +49,7 @@ pub async fn probe_url(m: Mgr<'_>, url: String, headers: Vec<(String, String)>) 
         size: remote.size,
         resumable: remote.resumable,
         category,
+        stream_kind: None,
     })
 }
 
@@ -69,6 +75,9 @@ fn check_add(req: &AddRequest) -> Result<(), String> {
     }
     if req.filename.trim().is_empty() {
         return Err("File name is empty".into());
+    }
+    if req.stream_kind == Some(crate::media::StreamKind::Hls) && (req.format.is_none() || !req.filename.to_ascii_lowercase().ends_with(".mkv")) {
+        return Err("HLS downloads need a selected format and a .mkv destination".into());
     }
     Ok(())
 }
@@ -470,13 +479,19 @@ pub fn is_media_url(url: String) -> bool {
 }
 
 #[tauri::command]
-pub async fn probe_media(m: Mgr<'_>, url: String, cookies: Option<String>) -> Result<crate::media::MediaInfo, String> {
-    crate::media::probe(m.client(), url.trim(), cookies).await.map_err(|e| format!("{e:#}"))
+pub async fn probe_media(m: Mgr<'_>, url: String, cookies: Option<String>, headers: Option<Vec<(String, String)>>, media_cookies: Option<Vec<crate::media::Cookie>>, stream_kind: Option<crate::media::StreamKind>) -> Result<crate::media::MediaInfo, String> {
+    let mut headers = headers.unwrap_or_default();
+    if let Some(cookies) = cookies.filter(|v| !v.is_empty()) {
+        if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("cookie")) { headers.push(("Cookie".into(), cookies)); }
+    }
+    crate::media::probe(m.client(), url.trim(), headers, media_cookies.unwrap_or_default(), stream_kind).await.map_err(|e| format!("{e:#}"))
 }
 
 /// A video-site link pasted into the main window: choose its quality in a
 /// "New download" window, like a link caught from the browser.
 #[tauri::command]
-pub fn open_new_download(m: Mgr, url: String) {
-    m.new_download_window(Incoming { url: url.trim().to_string(), filename: None, referrer: None, cookies: None, user_agent: None });
+pub fn open_new_download(m: Mgr, url: String, stream_kind: Option<crate::media::StreamKind>, headers: Option<Vec<(String, String)>>) {
+    let headers = headers.unwrap_or_default();
+    let value = |name: &str| headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone());
+    m.new_download_window(Incoming { url: url.trim().to_string(), filename: None, referrer: value("referer"), cookies: value("cookie"), user_agent: value("user-agent"), stream_kind, media_cookies: vec![] });
 }

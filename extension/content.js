@@ -8,6 +8,7 @@
 (() => {
   if (window.__swiftdlLoaded) return;
   window.__swiftdlLoaded = true;
+  chrome.runtime.sendMessage({ type: "frame-context" }).catch(() => {});
 
   // Alt+click: skip SwiftDL for this download.
   document.addEventListener("click", (e) => {
@@ -79,7 +80,7 @@
     panel.addEventListener("click", (e) => {
       e.stopPropagation();
       const item = e.target.closest(".item:not([disabled])");
-      if (item) grab(item.dataset.url, item.dataset.name);
+      if (item) grab(item.dataset.url, item.dataset.name, item.dataset.kind);
     });
     wrap.addEventListener("mouseenter", () => clearTimeout(hideTimer));
     wrap.addEventListener("mouseleave", () => scheduleHide());
@@ -124,38 +125,38 @@
   async function toggle() {
     if (open) { setOpen(false); return; }
     setOpen(true);
-    if (onVideoSite()) return grab(location.href, title());
     panel.innerHTML = `<div class="msg">Looking for downloadable files…</div>`;
     let res;
     try { res = await chrome.runtime.sendMessage({ type: "media" }); } catch { res = { items: [] }; }
     const items = [...(res?.items || [])];
     const src = video?.currentSrc;
     if (src && /^https?:/i.test(src) && !items.some((m) => m.url === src)) items.unshift({ url: src, kind: "file", mime: "video/mp4", size: 0 });
-    const files = items.filter((m) => m.kind === "file");
-    const streams = items.filter((m) => m.kind !== "file");
+    const files = items.filter((m) => m.kind === "file" || m.kind === "hls");
+    const streams = items.filter((m) => m.kind === "dash");
     const name = title();
-    let html = "";
+    let html = onVideoSite() ? `<button class="item" data-url="${encodeURIComponent(location.href)}" data-name="${name.replace(/"/g, "'")}"><span class="tag">PAGE</span><span class="meta"><b>This video</b><span>Choose the quality in SwiftDL</span></span></button>` : "";
     if (files.length) {
       html += `<div class="head">Video and audio on this page</div>`;
       html += files.map((m) => {
+        if (m.kind === "hls") return `<button class="item" data-url="${encodeURIComponent(m.url)}" data-kind="hls" data-name="${name.replace(/"/g, "'")}"><span class="tag">HLS</span><span class="meta"><b>HLS stream</b><span>Choose the quality in SwiftDL</span></span></button>`;
         const ext = extOf(m.url, m.mime || "");
         const kind = /^audio/.test(m.mime) || /mp3|m4a|aac|ogg|opus|flac|wav/.test(ext) ? "Audio" : "Video";
-        return `<button class="item" data-url="${encodeURI(m.url).replace(/"/g, "%22")}" data-name="${name.replace(/"/g, "'")}.${ext}"><span class="tag">${ext.toUpperCase()}</span><span class="meta"><b>${kind}${m.size ? ` · ${bytes(m.size)}` : ""}</b><span>${new URL(m.url).hostname}</span></span></button>`;
+        return `<button class="item" data-url="${encodeURIComponent(m.url)}" data-name="${name.replace(/"/g, "'")}.${ext}"><span class="tag">${ext.toUpperCase()}</span><span class="meta"><b>${kind}${m.size ? ` · ${bytes(m.size)}` : ""}</b><span>${new URL(m.url).hostname}</span></span></button>`;
       }).join("");
     }
     if (streams.length) {
       html += `<div class="head">Streams</div>` + streams.slice(0, 3).map((m) =>
         `<button class="item" disabled><span class="tag stream">${m.kind.toUpperCase()}</span><span class="meta"><b>Streaming video</b><span>Not supported yet</span></span></button>`).join("");
     }
-    if (!files.length && !streams.length) html = `<div class="msg">No downloadable file found yet. Play the video for a moment, then try again.</div>`;
-    else if (!files.length) html += `<div class="msg">This video streams in pieces (HLS/DASH), which SwiftDL can't download yet.</div>`;
+    if (!html && !streams.length) html = `<div class="msg">No downloadable file found yet. Play the video for a moment, then try again.</div>`;
+    else if (!files.length && streams.length) html += `<div class="msg">DASH streams are not supported yet. HLS VOD streams can be downloaded.</div>`;
     panel.innerHTML = html;
   }
 
-  async function grab(url, filename) {
+  async function grab(url, filename, streamKind) {
     panel.innerHTML = `<div class="msg">Sending to SwiftDL…</div>`;
     let res;
-    try { res = await chrome.runtime.sendMessage({ type: "grab", url: decodeURI(url), filename }); } catch (e) { res = { ok: false, error: String(e) }; }
+    try { res = await chrome.runtime.sendMessage({ type: "grab", url: decodeURIComponent(url), filename, streamKind }); } catch (e) { res = { ok: false, error: String(e) }; }
     panel.innerHTML = res?.ok
       ? `<div class="msg ok">Sent to SwiftDL ✓</div>`
       : `<div class="msg err">Couldn't reach SwiftDL. Make sure the app is installed and has been opened once.</div>`;

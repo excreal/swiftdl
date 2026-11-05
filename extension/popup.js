@@ -39,12 +39,13 @@ async function main() {
   });
 
   const { items = [] } = await chrome.runtime.sendMessage({ type: "media", tabId: tab.id, pageUrl: tab.url });
-  const files = items.filter((m) => m.kind === "file");
-  const streams = items.filter((m) => m.kind !== "file");
+  const files = items.filter((m) => m.kind === "file" || m.kind === "hls");
+  const streams = items.filter((m) => m.kind === "dash");
   const title = (tab.title || "download").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
   const ext = (m) => (/\.([a-z0-9]{2,4})(?:$|[?#])/i.exec(new URL(m.url).pathname) || [])[1]?.toLowerCase() || (m.mime.split("/")[1] || "mp4").replace(/^x-/, "").slice(0, 4);
 
   let html = files.map((m, i) => {
+    if (m.kind === "hls") return `<div class="m"><span class="tag">HLS</span><span class="mt"><b>HLS stream</b><span>Choose the quality in SwiftDL</span></span><button class="dl" data-i="${i}" title="Download with SwiftDL">${DL_ICON}</button></div>`;
     const e = ext(m);
     const audio = /^audio/.test(m.mime) || /mp3|m4a|aac|ogg|opus|flac|wav/.test(e);
     return `<div class="m"><span class="tag">${e.toUpperCase()}</span><span class="mt"><b>${audio ? "Audio" : "Video"}</b><span title="${esc(m.url)}">${m.size ? bytes(m.size) : esc(new URL(m.url).hostname)}</span></span><button class="dl" data-i="${i}" title="Download with SwiftDL">${DL_ICON}</button></div>`;
@@ -52,7 +53,7 @@ async function main() {
   html += streams.slice(0, 2).map((m) => `<div class="m"><span class="tag stream">${m.kind.toUpperCase()}</span><span class="mt"><b>Stream</b><span>Not supported yet</span></span></div>`).join("");
   // Video sites go through SwiftDL's quality picker, whatever the page loaded.
   if (host && VIDEO_SITE.test(host)) {
-    html = `<div class="m"><span class="tag">PAGE</span><span class="mt"><b>This video</b><span>Choose the quality in SwiftDL</span></span><button class="dl" data-page title="Download with SwiftDL">${DL_ICON}</button></div>`;
+    html = `<div class="m"><span class="tag">PAGE</span><span class="mt"><b>This video</b><span>Choose the quality in SwiftDL</span></span><button class="dl" data-page title="Download with SwiftDL">${DL_ICON}</button></div>` + html;
   }
   $("media").innerHTML = html;
   $("found").hidden = !html;
@@ -60,8 +61,8 @@ async function main() {
     const b = e.target.closest(".dl");
     if (!b) return;
     const m = b.hasAttribute("data-page") ? { url: tab.url } : files[Number(b.dataset.i)];
-    const name = b.hasAttribute("data-page") ? title : `${title}.${ext(m)}`;
-    const r = await chrome.runtime.sendMessage({ type: "grab", url: m.url, filename: name, tabId: tab.id, pageUrl: tab.url });
+    const name = b.hasAttribute("data-page") || m.kind === "hls" ? title : `${title}.${ext(m)}`;
+    const r = await chrome.runtime.sendMessage({ type: "grab", url: m.url, filename: name, streamKind: m.kind === "hls" ? "hls" : undefined, tabId: tab.id, pageUrl: tab.url });
     b.innerHTML = r?.ok ? CHECK : DL_ICON;
     b.classList.toggle("done", !!r?.ok);
   };

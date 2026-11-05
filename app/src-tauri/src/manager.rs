@@ -60,6 +60,10 @@ pub struct Item {
     /// which go through yt-dlp instead of the engine.
     #[serde(default)]
     pub format: Option<String>,
+    #[serde(default)]
+    pub stream_kind: Option<crate::media::StreamKind>,
+    #[serde(default)]
+    pub media_cookies: Vec<crate::media::Cookie>,
     /// For a torrent or magnet link: the files chosen (empty = all). Its
     /// presence marks the download as a torrent.
     #[serde(default)]
@@ -83,6 +87,10 @@ pub struct Incoming {
     pub cookies: Option<String>,
     #[serde(default)]
     pub user_agent: Option<String>,
+    #[serde(default)]
+    pub stream_kind: Option<crate::media::StreamKind>,
+    #[serde(default)]
+    pub media_cookies: Vec<crate::media::Cookie>,
 }
 
 impl Incoming {
@@ -126,6 +134,10 @@ pub struct AddRequest {
     /// yt-dlp format, for a video-site download (see `Item::format`).
     #[serde(default)]
     pub format: Option<String>,
+    #[serde(default)]
+    pub stream_kind: Option<crate::media::StreamKind>,
+    #[serde(default)]
+    pub media_cookies: Vec<crate::media::Cookie>,
     /// Expected size, when known up front (video qualities).
     #[serde(default)]
     pub size: Option<u64>,
@@ -254,6 +266,8 @@ impl DownloadManager {
                 speed: 0.0,
                 connections: 0,
                 format: req.format,
+                stream_kind: req.stream_kind,
+                media_cookies: req.media_cookies,
                 torrent_files: req.torrent_files,
                 note: None,
             });
@@ -339,7 +353,7 @@ impl DownloadManager {
     /// own small "New download" window rather than the main window.
     pub fn incoming(self: &Arc<Self>, inc: Incoming) {
         // Video sites always ask: there's a quality to choose.
-        if self.settings().ask_before_download || crate::media::is_media_url(&inc.url) || crate::torrent::is_torrent(&inc.url, inc.filename.as_deref()) {
+        if self.settings().ask_before_download || inc.stream_kind.is_some() || crate::media::is_media_url(&inc.url) || crate::torrent::is_torrent(&inc.url, inc.filename.as_deref()) {
             self.new_download_window(inc);
             return;
         }
@@ -350,7 +364,7 @@ impl DownloadManager {
             let probed = swiftdl_engine::probe(&this.client, &inc.url, &to_header_map(&headers)).await.ok().map(|r| r.filename);
             let filename = inc.suggested_name().or(probed).unwrap_or_else(|| "download.bin".into());
             let dir = this.default_dir(category_for(&filename));
-            this.add(AddRequest { url: inc.url, filename, dir, headers, start: true, window: None, format: None, size: None, torrent_files: None });
+            this.add(AddRequest { url: inc.url, filename, dir, headers, start: true, window: None, format: None, stream_kind: None, media_cookies: vec![], size: None, torrent_files: None });
         });
     }
 
@@ -466,8 +480,11 @@ impl DownloadManager {
             tauri::async_runtime::spawn(async move {
                 let result = match kind {
                     Kind::Media(format) => {
-                        let cookies = req.headers.get("cookie").and_then(|v| v.to_str().ok()).map(str::to_string);
-                        let job = crate::media::Job { url: req.url.clone(), format, dest: req.dest.clone(), cookies };
+                        let item = this.item(id);
+                        let headers = item.as_ref().map(|i| i.headers.clone()).unwrap_or_default();
+                        let cookies = item.as_ref().map(|i| i.media_cookies.clone()).unwrap_or_default();
+                        let stream_kind = item.and_then(|i| i.stream_kind);
+                        let job = crate::media::Job { url: req.url.clone(), format, dest: req.dest.clone(), headers, cookies, stream_kind };
                         crate::media::run(&this.client, job, progress, note, cancel).await
                     }
                     Kind::Torrent(files) => {
@@ -519,6 +536,7 @@ impl DownloadManager {
                             item.size = item.size.or(Some(item.downloaded));
                             item.downloaded = item.size.unwrap_or(item.downloaded);
                             item.headers.clear();
+                            item.media_cookies.clear();
                             item.remaining.clear();
                             if notify_enabled {
                                 notify = Some(item.filename.clone());
@@ -662,7 +680,22 @@ fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
 
 fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    drop(file);
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

@@ -88,6 +88,13 @@ document.addEventListener("contextmenu", (e) => { if (!e.target.closest("input")
 
 const params = new URLSearchParams(location.search);
 
+function categoryDir(settings, category) {
+  const base = settings.downloadDir;
+  if (!settings.sortIntoCategories || category === "Other") return base;
+  const separator = /^[a-z]:[\\/]|^\\\\/i.test(base) ? "\\" : "/";
+  return base + (base.endsWith(separator) ? "" : separator) + category;
+}
+
 // Adds the download, or shows why it couldn't be added above the buttons
 // (a failed click must never just do nothing). Returns its id, or null.
 async function addDownload(req) {
@@ -111,10 +118,10 @@ async function confirmView(token) {
   if (inc.referrer) headers.push(["Referer", inc.referrer]);
   if (inc.userAgent) headers.push(["User-Agent", inc.userAgent]);
   let dir = settings.downloadDir, dirTouched = false, info = null;
-  if (await invoke("is_media_url", { url: inc.url })) return mediaView(token, inc, settings, headers);
+  if (inc.streamKind === "hls" || await invoke("is_media_url", { url: inc.url })) return mediaView(token, inc, settings, headers);
   if (await invoke("is_torrent_url", { url: inc.url, filename: inc.filename || null })) return torrentView(token, inc, settings, headers);
 
-  const dirFor = (cat) => (settings.sortIntoCategories && cat !== "Other" ? `${settings.downloadDir}\\${cat}` : settings.downloadDir);
+  const dirFor = (cat) => categoryDir(settings, cat);
   view.innerHTML = `
     <div class="d-head"><span id="c-tile">${glyph("Other")}</span><div class="d-name"><input id="c-name" spellcheck="false" placeholder="Getting file details…"><div class="d-sub"><span class="st">${esc(host(inc.url))}</span></div></div></div>
     <div class="kv">
@@ -135,6 +142,7 @@ async function confirmView(token) {
 
   try {
     info = await invoke("probe_url", { url: inc.url, headers });
+    if (info.streamKind === "hls") return mediaView(token, { ...inc, streamKind: "hls" }, settings, headers);
     const suggested = /\.[a-z0-9]{2,5}$/i.test(inc.filename || "") ? inc.filename.split(/[\\/]/).pop() : "";
     $("c-name").value = suggested || info.filename;
     $("c-cat").value = info.category;
@@ -170,7 +178,7 @@ async function confirmView(token) {
 const safeName = (s) => s.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/, "").slice(0, 150) || "video";
 async function mediaView(token, inc, settings, headers) {
   let dir = settings.downloadDir, dirTouched = false, info = null;
-  const dirFor = (cat) => (settings.sortIntoCategories && cat !== "Other" ? `${settings.downloadDir}\\${cat}` : settings.downloadDir);
+  const dirFor = (cat) => categoryDir(settings, cat);
   view.innerHTML = `
     <div class="d-head"><span id="c-tile">${glyph("Video")}</span><div class="d-name"><input id="c-name" spellcheck="false" placeholder="Getting video details…"><div class="d-sub"><span class="st">${esc(host(inc.url))}</span></div></div></div>
     <div class="kv">
@@ -190,13 +198,13 @@ async function mediaView(token, inc, settings, headers) {
   const slow = setTimeout(() => { $("c-first").hidden = false; }, 4000);
   const quality = () => info.qualities[Number($("c-qs").value) || 0];
   const applyQuality = () => {
-    const q = quality(), cat = q.ext === "mp4" || q.ext === "webm" ? "Video" : "Music";
+    const q = quality(), cat = q.audioOnly ? "Music" : ["mp4", "webm", "mkv"].includes(q.ext) ? "Video" : "Music";
     $("c-name").value = $("c-name").value.replace(/\.[a-z0-9]{2,4}$/i, "") + `.${q.ext}`;
     $("c-tile").innerHTML = glyph(cat);
     if (!dirTouched) setDir(dirFor(cat));
   };
   try {
-    info = await invoke("probe_media", { url: inc.url, cookies: inc.cookies || null });
+    info = await invoke("probe_media", { url: inc.url, headers, mediaCookies: inc.mediaCookies || [], streamKind: inc.streamKind || null, cookies: null });
     $("c-name").value = `${safeName(info.title)}.${info.qualities[0].ext}`;
     $("c-q").innerHTML = `<select id="c-qs">${info.qualities.map((q, i) => `<option value="${i}">${esc(q.label)}${q.size ? ` · ${bytes(q.size)}` : ""}</option>`).join("")}</select>`;
     // Default to the best quality up to 1080p: 4K files are huge, and
@@ -217,10 +225,11 @@ async function mediaView(token, inc, settings, headers) {
   $("c-browse").onclick = async () => { const d = await invoke("pick_folder", { start: dir }); if (d) { setDir(d); dirTouched = true; } };
   $("c-cancel").onclick = () => { invoke("forget_confirm", { token }); $("w-close").click(); };
   const add = async (start) => {
-    const filename = safeName($("c-name").value);
+    let filename = safeName($("c-name").value);
     if (!filename || !info) return;
     const q = quality();
-    const id = await addDownload({ url: inc.url, filename, dir, headers, start, window: win?.label, format: q.format, size: q.size ?? null });
+    if (info.streamKind === "hls") filename = filename.replace(/\.[a-z0-9]{2,4}$/i, "") + `.${q.ext}`;
+    const id = await addDownload({ url: inc.url, filename, dir, headers, start, window: win?.label, format: q.format, size: q.size ?? null, streamKind: info.streamKind || inc.streamKind || null, mediaCookies: inc.mediaCookies || [] });
     if (id == null) return;
     invoke("forget_confirm", { token });
     if (!start) { $("w-close").click(); return; }

@@ -748,15 +748,21 @@ async function probe() {
   const seq = ++add.seq;
   // Video sites need a quality and torrents a file choice: their own window.
   const special = await invoke("is_media_url", { url }).catch(() => false) || await invoke("is_torrent_url", { url, filename: null }).catch(() => false);
+  if (seq !== add.seq) return;
   if (special) {
     $("dlg-add").close();
-    invoke("open_new_download", { url });
+    invoke("open_new_download", { url, headers: add.headers });
     return;
   }
   setState("loading");
   try {
     const info = await invoke("probe_url", { url, headers: add.headers });
     if (seq !== add.seq) return;
+    if (info.streamKind === "hls") {
+      $("dlg-add").close();
+      await call("open_new_download", { url, streamKind: "hls", headers: add.headers });
+      return;
+    }
     add.info = info;
     if (!add.dirTouched) add.dir = info.dir;
     // A name from the extension (e.g. the video page's title) beats a

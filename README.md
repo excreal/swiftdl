@@ -173,6 +173,14 @@ When the server limits each connection, which many do, yes, by roughly the numbe
 <summary><b>Can it download videos from YouTube?</b></summary>
 
 Yes, and from Vimeo, X, Reddit and other video sites. Click the **Download video** button on the player (or paste the link into **New download**) and pick a quality, from 4K down to audio only. These sites don't serve a plain file, so SwiftDL uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) for them, plus ffmpeg to join the video and audio. Both are downloaded the first time you need them (on macOS and Linux, install ffmpeg with Homebrew or your package manager), and yt-dlp is kept up to date. Only download what you have the right to. DRM-protected video, like Netflix, will never be supported.
+
+### Can I download HLS streams?
+
+Finished, non-DRM HLS videos (VOD) can be downloaded from any host, not only the video sites above. Select an **HLS stream** in the extension popup or player overlay, or paste a `.m3u8` URL into **New download**. Extensionless pasted links are checked for an HLS content type or playlist signature. Pick a quality, then download to a Matroska (`.mkv`) file; ffmpeg is required, including for audio-only output.
+
+SwiftDL preserves signed playlist URLs and forwards Referer, User-Agent and domain-scoped cookies for the page and observed media requests. Pause keeps fragment checkpoints for resume, provided the URL and authentication remain valid. If a link expires, refresh the page and capture it again. Login schemes using browser-only state or custom authorization headers may not work. Live/event streams without an end marker, DRM, SAMPLE-AES and DASH streams are not supported in this phase.
+
+Local regression checks: `node tools/test-hls-extension.cjs` and `python3 tools/test-hls.py` (requires yt-dlp, ffmpeg and ffprobe on PATH). The latter generates authenticated MPEG-TS, fragmented MP4 and AES-128 fixtures and checks downloading, remuxing and pause/resume without contacting public sites.
 </details>
 
 <details>

@@ -5,6 +5,7 @@ mod browser;
 mod commands;
 mod manager;
 mod media;
+mod hls;
 mod native_host;
 mod settings;
 mod torrent;
@@ -153,7 +154,7 @@ fn main() {
                     };
                     if let (Some(link), Some(mgr)) = (link, _app.try_state::<Arc<DownloadManager>>()) {
                         if torrent::is_torrent(&link, None) {
-                            mgr.incoming(manager::Incoming { url: link, filename: None, referrer: None, cookies: None, user_agent: None });
+                            mgr.incoming(manager::Incoming { url: link, filename: None, referrer: None, cookies: None, user_agent: None, stream_kind: None, media_cookies: vec![] });
                         }
                     }
                 }

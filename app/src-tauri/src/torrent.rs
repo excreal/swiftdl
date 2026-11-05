@@ -339,7 +339,7 @@ mod macos {
 /// as their handler), as `--open <arg>` or as a bare argument.
 pub fn parse_open_arg(args: &[String]) -> Option<crate::manager::Incoming> {
     let arg = args.iter().skip(1).find(|a| a.starts_with("magnet:") || (a.to_ascii_lowercase().ends_with(".torrent") && Path::new(a).exists()))?;
-    Some(crate::manager::Incoming { url: arg.clone(), filename: None, referrer: None, cookies: None, user_agent: None })
+    Some(crate::manager::Incoming { url: arg.clone(), filename: None, referrer: None, cookies: None, user_agent: None, stream_kind: None, media_cookies: vec![] })
 }
 
 #[cfg(test)]

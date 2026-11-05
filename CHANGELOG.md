@@ -6,6 +6,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Generic HLS VOD downloads through yt-dlp: extension detection and handoff, pasted playlist links, quality selection, scoped cookies and headers, fragment pause/resume, and Matroska output.
+- Local HLS fixture tests for authenticated MPEG-TS, fragmented MP4 and AES-128 streams. Live HLS, DRM and DASH are explicitly excluded.
+
 ## [0.3.3] - 2026-11-05
 
 ### Added
