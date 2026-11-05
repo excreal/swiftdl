@@ -6,6 +6,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-05
+
+### Added
+- yt-dlp quality selection for XVideos, XNXX and HQPorner, including browser-extension routing.
+
+### Fixed
+- Pausing yt-dlp downloads now stops the whole process tree and preserves partial files for resume.
+- Opening downloaded files on Linux uses the host application's environment, reports startup failures and does not wait for the application to close.
+- Downloaded AppImages can be launched directly after granting owner execute permission.
+- Dailymotion embedded-player links containing a video ID are converted to regular video links; missing IDs show an actionable error.
+- Browser-preview media-site detection now matches supported hosts rather than domain names inside unrelated URLs.
+
 ## [0.3.1] - 2026-11-04
 
 ### Fixed
@@ -137,7 +149,8 @@ uses [Semantic Versioning](https://semver.org/).
 - GitHub Actions for CI and tagged releases (Windows, macOS, Linux and the
   extension zip).
 
-[Unreleased]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.2...v0.3.3
 [0.3.1]: https://github.com/harshsinghsv/swiftdl/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/harshsinghsv/swiftdl/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/harshsinghsv/swiftdl/compare/v0.2.2...v0.2.3

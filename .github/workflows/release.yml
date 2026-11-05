@@ -1,4 +1,4 @@
-# Push a tag like v0.2.0 to build installers for every platform and attach
+# Push a tag like v0.2.0 to build Linux installers and attach
 # them, plus the browser extension, to a draft GitHub release whose notes
 # come from CHANGELOG.md. Review the draft on GitHub, then publish it.
 # To rebuild an existing tag, run this workflow by hand and give the tag.
@@ -40,8 +40,6 @@ jobs:
           cat >> notes.md <<'EOF'
 
           ### Install
-          - **Windows:** `SwiftDL_*_x64-setup.exe` (no admin rights needed)
-          - **macOS:** `SwiftDL_*_universal.dmg`
           - **Linux:** `.AppImage`, `.deb` or `.rpm`
           - **Browser extension:** included with the app. Open SwiftDL and click *Add the extension* for a short guide (Chrome, Edge, Brave, Vivaldi and Firefox). `swiftdl-extension.zip` (Chromium browsers) and `swiftdl-firefox.xpi` (Firefox) have the same files.
           EOF
